@@ -109,58 +109,65 @@ export class AgentClient {
 
 export class Client {
     private readonly mount: string;
-    private readonly token: string;
+    private readonly token?: string;
     private readonly host: string;
     private readonly wsHost: string;
     private readonly hp?: number;
 
     constructor({ host, wsHost, mount, token, hp }: ClientOptions) {
         this.mount = mount ? `/${trimSlash(mount)}` : '';
-        this.token = token ? `ws-token/${token}` : 'ws';
+        this.token = token;
         this.host = host;
         this.wsHost = wsHost;
         this.hp = hp;
     }
 
     async auth<TAuthData = unknown, TAuthResponse = unknown, TErr = unknown>(data: TAuthData): Promise<Result<AxiosResponse<TAuthResponse>, TErr>> {
-        const res = await wrap<AxiosResponse<TAuthResponse>, TErr>(axios.post(`${this.host}${this.mount}/auth`, data));
+        const headers: Record<string, string> = this.token ? { 'x-token': this.token } : {};
+        const res = await wrap<AxiosResponse<TAuthResponse>, TErr>(axios.post(`${this.host}${this.mount}/auth`, data, { headers, withCredentials: true }));
         if (res.isOk()) return new Ok(res.v);
         return new Err(res.e);
     }
 
     async gauth<TResponse = unknown, TErr = unknown>(access_token: string): Promise<Result<AxiosResponse<TResponse>, TErr | void>> {
-        if (!this.token) return new Err<void, AxiosResponse<TResponse>>(undefined);
-        const res = await wrap<AxiosResponse<TResponse>, TErr>(axios.post(`${this.host}${this.mount}/gauth`, { access_token }));
+        if (!access_token) return new Err<void, AxiosResponse<TResponse>>(undefined);
+        const headers: Record<string, string> = this.token ? { 'x-token': this.token } : {};
+        const res = await wrap<AxiosResponse<TResponse>, TErr>(axios.post(`${this.host}${this.mount}/gauth`, { access_token }, { headers, withCredentials: true }));
         if (res.isOk()) return new Ok(res.v);
         return new Err(res.e);
     }
 
     async deauth(): Promise<Ok<void> | Err<void, void>> {
-        const res = await wrap(axios.delete(`${this.host}${this.mount}/auth`));
+        const headers: Record<string, string> = this.token ? { 'x-token': this.token } : {};
+        const res = await wrap(axios.delete(`${this.host}${this.mount}/auth`, { headers, withCredentials: true }));
         if (res.isOk()) return ok();
         return err();
     }
 
     async request2FA<T = unknown, E = unknown>(): Promise<Result<AxiosResponse<T>, E>> {
-        const res = await wrap<AxiosResponse<T>, E>(axios.post(`${this.host}${this.mount}/2fa/request`));
+        const headers: Record<string, string> = this.token ? { 'x-token': this.token } : {};
+        const res = await wrap<AxiosResponse<T>, E>(axios.post(`${this.host}${this.mount}/2fa/request`, undefined, { headers, withCredentials: true }));
         if (res.isOk()) return new Ok(res.v);
         return new Err(res.e);
     }
 
     async enable2FA<T = unknown, E = unknown>(secret: string, code: string): Promise<Result<AxiosResponse<T>, E>> {
-        const res = await wrap<AxiosResponse<T>, E>(axios.post(`${this.host}${this.mount}/2fa/enable`, { secret, code }));
+        const headers: Record<string, string> = this.token ? { 'x-token': this.token } : {};
+        const res = await wrap<AxiosResponse<T>, E>(axios.post(`${this.host}${this.mount}/2fa/enable`, { secret, code }, { headers, withCredentials: true }));
         if (res.isOk()) return new Ok(res.v);
         return new Err(res.e);
     }
 
     async verify2FA<T = unknown, E = unknown>(accountName: string, code: string, uuid: string): Promise<Result<AxiosResponse<T>, E>> {
-        const res = await wrap<AxiosResponse<T>, E>(axios.post(`${this.host}${this.mount}/2fa/verify`, { accountName, code, uuid }));
+        const headers: Record<string, string> = this.token ? { 'x-token': this.token } : {};
+        const res = await wrap<AxiosResponse<T>, E>(axios.post(`${this.host}${this.mount}/2fa/verify`, { accountName, code, uuid }, { headers, withCredentials: true }));
         if (res.isOk()) return new Ok(res.v);
         return new Err(res.e);
     }
 
     async disable2FA<T = unknown, E = unknown>(): Promise<Result<AxiosResponse<T>, E>> {
-        const res = await wrap<AxiosResponse<T>, E>(axios.delete(`${this.host}${this.mount}/2fa/disable`));
+        const headers: Record<string, string> = this.token ? { 'x-token': this.token } : {};
+        const res = await wrap<AxiosResponse<T>, E>(axios.delete(`${this.host}${this.mount}/2fa/disable`, { headers, withCredentials: true }));
         if (res.isOk()) return new Ok(res.v);
         return new Err(res.e);
     }
@@ -168,8 +175,8 @@ export class Client {
     async upload(file: string | Blob): Promise<Result<FileInfo, void>> {
         const form = new FormData();
         form.append('file', file);
-        const options = this.token ? { headers: { 'x-token': this.token } } : undefined;
-        const res = await wrap<AxiosResponse<FileInfo>>(axios.post(`${this.host}${this.mount}/file`, form, options));
+        const headers: Record<string, string> = this.token ? { 'x-token': this.token } : {};
+        const res = await wrap<AxiosResponse<FileInfo>>(axios.post(`${this.host}${this.mount}/file`, form, { headers, withCredentials: true }));
         if (res.isOk()) return new Ok(res.v.data);
         return new Err<void, FileInfo>(undefined);
     }
@@ -182,19 +189,22 @@ export class Client {
     }
 
     async getPresignedUploadUrl<T = unknown, E = unknown>(): Promise<Result<AxiosResponse<T>, E>> {
-        const res = await wrap<AxiosResponse<T>, E>(axios.post(`${this.host}${this.mount}/storage/upload`));
+        const headers: Record<string, string> = this.token ? { 'x-token': this.token } : {};
+        const res = await wrap<AxiosResponse<T>, E>(axios.post(`${this.host}${this.mount}/storage/upload`, undefined, { headers, withCredentials: true }));
         if (res.isOk()) return new Ok(res.v);
         return new Err(res.e);
     }
 
     async getPresignedDownloadUrl<T = unknown, E = unknown>(fileId: string): Promise<Result<AxiosResponse<T>, E>> {
-        const res = await wrap<AxiosResponse<T>, E>(axios.get(`${this.host}${this.mount}/storage/${fileId}`));
+        const headers: Record<string, string> = this.token ? { 'x-token': this.token } : {};
+        const res = await wrap<AxiosResponse<T>, E>(axios.get(`${this.host}${this.mount}/storage/${fileId}`, { headers, withCredentials: true }));
         if (res.isOk()) return new Ok(res.v);
         return new Err(res.e);
     }
 
     private reconnect(url: string, connection: Connection): void {
-        const ws = new (WS as any).w3cwebsocket(url);
+        const headers = this.token ? { 'x-token': this.token } : undefined;
+        const ws = headers ? new (WS as any).w3cwebsocket(url, undefined, undefined, headers) : new (WS as any).w3cwebsocket(url);
         connection.connect(ws, false);
     }
 
@@ -208,7 +218,7 @@ export class Client {
 
     connect(name: string, arg?: string): Promise<Result<Socket, ConnectFail>> {
         const pathArg = arg ? `/${arg}` : '';
-        const url = `${this.wsHost}${this.mount}/${this.token}/${name}${pathArg}`;
+        const url = `${this.wsHost}${this.mount}/ws/${name}${pathArg}`;
         let connection!: Connection;
         const [promise, resolve] = deal<Result<Socket, ConnectFail>>();
         const inter = {

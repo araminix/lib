@@ -11,6 +11,19 @@
 
 Instead of maintaining multiple raw WebSocket connections or writing complex manual event dispatchers, `@araminix/lib` introduces **typed, multiplexed bidirectional streams** over a single persistent WebSocket connection, backed by a robust **`Result<T, E>` monad** for compile-time error resilience.
 
+### 4. Client Authentication: Browser vs Node Agent
+
+`Client` automatically supports secure session handling:
+
+- **Browser Clients (Cookie Auth):**
+  Do not pass `token` to `new Client({ host, wsHost })`. The browser automatically sends the `httpOnly` session cookie with WebSocket upgrades to `/ws/:endpoint` and with `axios` HTTP requests (`withCredentials: true`).
+
+- **Node Clients / Agents (Header Auth):**
+  Pass `token: 'my-agent-token'` to `new Client({ host, wsHost, token })`. The client sends `x-token: <token>` in the HTTP upgrade request headers to `/ws/:endpoint` without embedding secrets in the URL.
+
+> [!NOTE]
+> The `/ws-token/<token>/...` path-based WebSocket routes are **deprecated** and maintained on the server solely for backward compatibility with legacy clients.
+
 ---
 
 ## 🌟 Key Features
