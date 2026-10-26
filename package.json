@@ -36,20 +36,18 @@
         "test": "node --test dist/tests/result.test.js dist/tests/utils.test.js dist/tests/messages.test.js dist/tests/logger.test.js dist/tests/stream.test.js dist/tests/socket.test.js",
         "test:coverage": "node --experimental-test-coverage --test dist/tests/result.test.js dist/tests/utils.test.js dist/tests/messages.test.js dist/tests/logger.test.js dist/tests/stream.test.js dist/tests/socket.test.js"
     },
-    "devDependencies": {
-        "@trivago/prettier-plugin-sort-imports": "^6.0.2",
-        "@types/node": "^26.6.5",
-        "@types/uuid": "^11.0.0",
-        "@types/websocket": "^1.0.10",
-        "prettier": "^3.9.10",
-        "typescript": "^7.0.2"
-    },
     "dependencies": {
-        "axios": "^1.20.0",
-        "fp-ts": "^2.16.11",
-        "gach": "^1.7.5",
-        "io-ts": "^2.2.22",
-        "uuid": "^14.0.3",
-        "websocket": "^1.0.35"
+        "axios": "1.20.0",
+        "fp-ts": "2.16.11",
+        "gach": "1.7.5",
+        "io-ts": "2.2.22",
+        "websocket": "1.0.35"
+    },
+    "devDependencies": {
+        "@trivago/prettier-plugin-sort-imports": "6.0.2",
+        "@types/node": "26.6.5",
+        "@types/websocket": "1.0.10",
+        "prettier": "3.9.10",
+        "typescript": "7.0.2"
     }
 }

@@ -1,4 +1,4 @@
-import * as t from 'io-ts';
+import { t } from "./utils/index.js";
 
 export const NewStream = t.type({
     type: t.literal('new_stream'),

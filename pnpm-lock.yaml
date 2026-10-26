@@ -9,41 +9,35 @@ importers:
   .:
     dependencies:
       axios:
-        specifier: ^1.20.0
+        specifier: 1.20.0
         version: 1.20.0(debug@4.4.3)
       fp-ts:
-        specifier: ^2.16.11
+        specifier: 2.16.11
         version: 2.16.11
       gach:
-        specifier: ^1.7.5
+        specifier: 1.7.5
         version: 1.7.5
       io-ts:
-        specifier: ^2.2.22
+        specifier: 2.2.22
         version: 2.2.22(fp-ts@2.16.11)
-      uuid:
-        specifier: ^14.0.3
-        version: 14.0.3
       websocket:
-        specifier: ^1.0.35
+        specifier: 1.0.35
         version: 1.0.35
     devDependencies:
       '@trivago/prettier-plugin-sort-imports':
-        specifier: ^6.0.2
+        specifier: 6.0.2
         version: 6.0.2(prettier@3.9.10)
       '@types/node':
-        specifier: ^26.6.5
+        specifier: 26.6.5
         version: 26.6.5
-      '@types/uuid':
-        specifier: ^11.0.0
-        version: 11.0.0
       '@types/websocket':
-        specifier: ^1.0.10
+        specifier: 1.0.10
         version: 1.0.10
       prettier:
-        specifier: ^3.9.10
+        specifier: 3.9.10
         version: 3.9.10
       typescript:
-        specifier: ^7.0.2
+        specifier: 7.0.2
         version: 7.0.2
 
 packages:
@@ -119,10 +113,6 @@ packages:
 
   '@types/node@26.6.5':
     resolution: {integrity: sha512-uMzsv9stDdofIZBx4UGh4Z9ZgXnGC9seRDscilBcTHAeOFk67MZg/k9bWVfO+bk4qZmG+l52hRnLwUiH2LnJTg==}
-
-  '@types/uuid@11.0.0':
-    resolution: {integrity: sha512-HVyk8nj2m+jcFRNazzqyVKiZezyhDKrGUA3jlEcg/nZ6Ms+qHwocba1Y/AaVaznJTAM9xpdFSh+ptbNrhOGvZA==}
-    deprecated: This is a stub types definition. uuid provides its own type definitions, so you do not need this installed.
 
   '@types/websocket@1.0.10':
     resolution: {integrity: sha512-svjGZvPB7EzuYS94cI7a+qhwgGU1y89wUgjT6E2wVUfmAGIvRfT7obBvRtnhXCSsoMdlG4gBFGE7MfkIXZLoww==}
@@ -478,10 +468,6 @@ packages:
     resolution: {integrity: sha512-Z6czzLq4u8fPOyx7TU6X3dvUZVvoJmxSQ+IcrlmagKhilxlhZgxPK6C5Jqbkw1IDUmFTM+cz9QDnnLTwDz/2gQ==}
     engines: {node: '>=6.14.2'}
 
-  uuid@14.0.3:
-    resolution: {integrity: sha512-Sc5u1VVln93y1Xnz4R+CunOZc7R9LUcTmhj7Rc7Eg3HVcf7rVn2FOoa812fe0W8p3jD7xeoGSYbfqCGGH2B6xw==}
-    hasBin: true
-
   websocket@1.0.35:
     resolution: {integrity: sha512-/REy6amwPZl44DDzvRCkaI1q1bIiQB0mEFQLUrhz3z2EK91cp3n72rAjUlrTP0zV22HJIUOVHQGPxhFRjxjt+Q==}
     engines: {node: '>=4.0.0'}
@@ -571,10 +557,6 @@ snapshots:
   '@types/node@26.6.5':
     dependencies:
       undici-types: 8.9.0
-
-  '@types/uuid@11.0.0':
-    dependencies:
-      uuid: 14.0.3
 
   '@types/websocket@1.0.10':
     dependencies:
@@ -882,8 +864,6 @@ snapshots:
   utf-8-validate@5.0.10:
     dependencies:
       node-gyp-build: 4.8.4
-
-  uuid@14.0.3: {}
 
   websocket@1.0.35:
     dependencies:

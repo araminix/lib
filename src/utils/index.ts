@@ -1,25 +1,24 @@
 import * as t from 'io-ts';
-import { v4 } from 'uuid';
-
 import { deal, Err, err, Ok, ok, R, Result } from './result.js';
 
 export * from './logger.js';
 export * from './result.js';
+
 export { t, Result, Ok, Err, ok, err, R, deal };
-
-export function uuid(): string {
-    return v4();
-}
-
-export type Defined<T> = T extends undefined ? never : T;
-
-export function sleep(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 export enum LoopResult {
     Cont = 0,
     Stop = 1,
+}
+
+export type Defined<T> = T extends undefined ? never : T;
+
+export function uuid(): string {
+    return crypto.randomUUID();
+}
+
+export function sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export function loop(fun: () => Promise<LoopResult>): void {
