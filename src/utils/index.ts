@@ -1,4 +1,6 @@
 import * as t from 'io-ts';
+
+import { logger } from './logger.js';
 import { deal, Err, err, Ok, ok, R, Result } from './result.js';
 
 export * from './logger.js';
@@ -21,16 +23,40 @@ export function sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-export function loop(fun: () => Promise<LoopResult>): void {
-    fun().then((result) => {
-        if (result === LoopResult.Cont) {
-            loop(fun);
-        }
-    });
+export function loop(fun: () => Promise<LoopResult>, onError?: (error: unknown) => LoopResult | Promise<LoopResult>): void {
+    Promise.resolve()
+        .then(fun)
+        .then((result) => {
+            if (result === LoopResult.Cont) {
+                loop(fun, onError);
+            }
+        })
+        .catch(async (error: unknown) => {
+            logger.error('Unhandled loop error:', error);
+            try {
+                const nextAction = onError ? await onError(error) : LoopResult.Cont;
+                if (nextAction === LoopResult.Cont) {
+                    setTimeout(() => {
+                        loop(fun, onError);
+                    }, 0);
+                }
+            } catch (handlerError) {
+                logger.error('Error inside loop onError handler:', handlerError);
+            }
+        });
 }
 
 export function once(fun: () => Promise<void> | void): void {
-    fun();
+    try {
+        const res = fun();
+        if (res && typeof (res as any).catch === 'function') {
+            (res as Promise<void>).catch((error: unknown) => {
+                logger.error('Unhandled once error:', error);
+            });
+        }
+    } catch (error) {
+        logger.error('Unhandled once error:', error);
+    }
 }
 
 export async function wrap<OkType, ErrType = Error>(exe: Promise<OkType> | (() => Promise<OkType>)): Promise<Result<OkType, ErrType>> {

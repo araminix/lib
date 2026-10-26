@@ -415,6 +415,7 @@ export interface ConnectionInterface {
 }
 
 export enum WsCloseCodes {
+    InternalError = 1011,
     NotFound = 4404,
     ConcurrentConnection = 4409,
     Unauthorized = 4401,

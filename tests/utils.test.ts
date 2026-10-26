@@ -1,7 +1,7 @@
 import assert from 'node:assert';
 import { describe, it } from 'node:test';
 
-import { once, sleep, trimSlash, uuid, wrap, wrapSync } from '../src/utils/index.js';
+import { deal, loop, LoopResult, once, sleep, trimSlash, uuid, wrap, wrapSync } from '../src/utils/index.js';
 
 describe('Utils', () => {
     it('uuid() returns valid UUID v4 format', () => {
@@ -57,5 +57,69 @@ describe('Utils', () => {
             count++;
         });
         assert.strictEqual(count, 1);
+    });
+    it('loop catches asynchronous rejection and continues via setTimeout when onError is omitted', async () => {
+        let attempts = 0;
+        const [promise, resolve] = deal<void>();
+        loop(async () => {
+            attempts++;
+            if (attempts === 1) {
+                throw new Error('first attempt failed');
+            }
+            resolve();
+            return LoopResult.Stop;
+        });
+        await promise;
+        assert.strictEqual(attempts, 2);
+    });
+
+    it('loop catches rejection and stops when onError returns LoopResult.Stop', async () => {
+        let attempts = 0;
+        let onErrorCalled = false;
+        const [promise, resolve] = deal<void>();
+        loop(
+            async () => {
+                attempts++;
+                throw new Error('fail');
+            },
+            (err) => {
+                onErrorCalled = true;
+                assert.ok(err instanceof Error);
+                resolve();
+                return LoopResult.Stop;
+            },
+        );
+        await promise;
+        assert.strictEqual(attempts, 1);
+        assert.strictEqual(onErrorCalled, true);
+    });
+
+    it('loop catches synchronous throws and honors onError returning LoopResult.Stop', async () => {
+        let attempts = 0;
+        const [promise, resolve] = deal<void>();
+        loop(
+            (() => {
+                attempts++;
+                throw new Error('sync throw');
+            }) as any,
+            () => {
+                resolve();
+                return LoopResult.Stop;
+            },
+        );
+        await promise;
+        assert.strictEqual(attempts, 1);
+    });
+
+    it('once catches synchronous and asynchronous errors without unhandled rejection', async () => {
+        assert.doesNotThrow(() => {
+            once(() => {
+                throw new Error('sync error in once');
+            });
+            once(async () => {
+                throw new Error('async error in once');
+            });
+        });
+        await sleep(10);
     });
 });
