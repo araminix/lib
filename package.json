@@ -5,17 +5,29 @@
     "type": "module",
     "main": "./dist/index.js",
     "types": "./dist/index.d.ts",
+    "publishConfig": {
+        "access": "public"
+    },
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/araminix/lib.git"
+    },
+    "bugs": {
+        "url": "https://github.com/araminix/lib/issues"
+    },
+    "homepage": "https://github.com/araminix/lib#readme",
+    "files": [
+        "dist",
+        "!dist/tests",
+        "README.md",
+        "LICENSE"
+    ],
     "exports": {
         ".": {
             "types": "./dist/index.d.ts",
             "import": "./dist/index.js"
         }
     },
-    "files": [
-        "dist",
-        "README.md",
-        "LICENSE"
-    ],
     "keywords": [
         "araminix",
         "websocket",
@@ -31,6 +43,7 @@
     "license": "MIT",
     "scripts": {
         "build": "tsc",
+        "prepublishOnly": "pnpm run build && pnpm test",
         "format": "prettier --write .",
         "format:check": "prettier --check .",
         "test": "node --test dist/tests/result.test.js dist/tests/utils.test.js dist/tests/messages.test.js dist/tests/logger.test.js dist/tests/stream.test.js dist/tests/socket.test.js",
