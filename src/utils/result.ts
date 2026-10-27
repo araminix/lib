@@ -52,7 +52,7 @@ export class Err<E = void, T = void> {
     }
 
     unwrap(): T {
-        throw this.e;
+        throw this.e instanceof Error ? this.e : new UnwrapError(this.e);
     }
 
     serialize(): { ok: false; e: E } {
@@ -60,6 +60,27 @@ export class Err<E = void, T = void> {
             ok: false,
             e: this.e,
         };
+    }
+}
+
+function describeValue(value: unknown): string {
+    if (typeof value === 'string') {
+        return value;
+    }
+    try {
+        return JSON.stringify(value) ?? String(value);
+    } catch {
+        return String(value);
+    }
+}
+
+export class UnwrapError<E = unknown> extends Error {
+    readonly e: E;
+
+    constructor(e: E) {
+        super(`unwrap() called on an Err: ${describeValue(e)}`, { cause: e });
+        this.name = 'UnwrapError';
+        this.e = e;
     }
 }
 
