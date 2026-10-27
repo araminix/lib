@@ -165,9 +165,15 @@ export class Client {
         return new Err(res.e);
     }
 
-    async disable2FA<T = unknown, E = unknown>(): Promise<Result<AxiosResponse<T>, E>> {
+    async disable2FA<T = unknown, E = unknown>(code?: string): Promise<Result<AxiosResponse<T>, E>> {
         const headers: Record<string, string> = this.token ? { 'x-token': this.token } : {};
-        const res = await wrap<AxiosResponse<T>, E>(axios.delete(`${this.host}${this.mount}/2fa/disable`, { headers, withCredentials: true }));
+        const res = await wrap<AxiosResponse<T>, E>(
+            axios.delete(`${this.host}${this.mount}/2fa/disable`, {
+                headers,
+                withCredentials: true,
+                data: code !== undefined ? { code } : undefined,
+            }),
+        );
         if (res.isOk()) return new Ok(res.v);
         return new Err(res.e);
     }

@@ -1,3 +1,4 @@
+import axios from "axios";
 import assert from 'node:assert';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import WS from 'websocket';
@@ -80,5 +81,53 @@ describe('Client Session Security and Headers', () => {
         client.connect('agent');
         assert.strictEqual(capturedUrl, 'ws://127.0.0.1:3000/api/v1/ws/agent');
         assert.deepStrictEqual(capturedHeaders, { 'x-token': 'custom-token' });
+    });
+
+    it('sends DELETE /2fa/disable without body when code is omitted', async () => {
+        
+        const originalDelete = axios.delete;
+        let deleteCall: any;
+        (axios as any).delete = async (url: string, config: any) => {
+            deleteCall = { url, config };
+            return { data: { success: true } };
+        };
+        try {
+            const client = new Client({
+                host: 'http://127.0.0.1:3000',
+                wsHost: 'ws://127.0.0.1:3000',
+                token: 'user-token',
+            });
+            const res = await client.disable2FA();
+            assert.ok(res.isOk());
+            assert.strictEqual(deleteCall.url, 'http://127.0.0.1:3000/2fa/disable');
+            assert.strictEqual(deleteCall.config.data, undefined);
+            assert.deepStrictEqual(deleteCall.config.headers, { 'x-token': 'user-token' });
+        } finally {
+            axios.delete = originalDelete;
+        }
+    });
+
+    it('sends DELETE /2fa/disable with code in body when code is provided', async () => {
+        
+        const originalDelete = axios.delete;
+        let deleteCall: any;
+        (axios as any).delete = async (url: string, config: any) => {
+            deleteCall = { url, config };
+            return { data: { success: true } };
+        };
+        try {
+            const client = new Client({
+                host: 'http://127.0.0.1:3000',
+                wsHost: 'ws://127.0.0.1:3000',
+                token: 'user-token',
+            });
+            const res = await client.disable2FA('123456');
+            assert.ok(res.isOk());
+            assert.strictEqual(deleteCall.url, 'http://127.0.0.1:3000/2fa/disable');
+            assert.deepStrictEqual(deleteCall.config.data, { code: '123456' });
+            assert.deepStrictEqual(deleteCall.config.headers, { 'x-token': 'user-token' });
+        } finally {
+            axios.delete = originalDelete;
+        }
     });
 });
