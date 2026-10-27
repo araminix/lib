@@ -208,19 +208,19 @@ export class Client {
         if (typeof file === 'string') {
             return `${this.host}${this.mount}/file/${file}`;
         }
-        return `${this.host}${this.mount}/file/${file.id}/${file.name}`;
+        return `${this.host}${this.mount}/file/${file.id}/${encodeURIComponent(file.name)}`;
     }
 
-    async getPresignedUploadUrl<T = unknown, E = unknown>(): Promise<Result<AxiosResponse<T>, E>> {
+    async getPresignedUploadUrl<T = unknown, E = unknown>(mimetype?: string, fileName?: string): Promise<Result<AxiosResponse<T>, E>> {
         const headers = this.requestHeaders();
-        const res = await wrap<AxiosResponse<T>, E>(axios.post(`${this.host}${this.mount}/storage/upload`, undefined, { headers, withCredentials: true }));
+        const res = await wrap<AxiosResponse<T>, E>(axios.post(`${this.host}${this.mount}/attachments/upload`, { mimetype, fileName }, { headers, withCredentials: true }));
         if (res.isOk()) return new Ok(res.v);
         return new Err(res.e);
     }
 
     async getPresignedDownloadUrl<T = unknown, E = unknown>(fileId: string): Promise<Result<AxiosResponse<T>, E>> {
         const headers = this.requestHeaders();
-        const res = await wrap<AxiosResponse<T>, E>(axios.get(`${this.host}${this.mount}/storage/${fileId}`, { headers, withCredentials: true }));
+        const res = await wrap<AxiosResponse<T>, E>(axios.get(`${this.host}${this.mount}/attachments/${encodeURIComponent(fileId)}`, { headers, withCredentials: true }));
         if (res.isOk()) return new Ok(res.v);
         return new Err(res.e);
     }
