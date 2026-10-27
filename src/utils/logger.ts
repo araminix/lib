@@ -367,10 +367,15 @@ export class Logger {
                 const filePath = path.join(directory, fileName);
                 let stream = this.storeStreams.get(filePath);
                 if (!stream) {
-                    // A new file means a new day (or directory): release streams for the old files.
-                    // Note: the logs and errors files share this map, so alternating between ERROR and other levels also reopens streams.
-                    this.storeStreams.forEach((oldStream) => oldStream.end());
-                    this.storeStreams.clear();
+                    // The logs and errors files of the current day stay open side by side; only streams for an earlier day or
+                    // another directory are released.
+                    const datedSuffix = `-${Logger.getTodaysDate()}.log`;
+                    this.storeStreams.forEach((oldStream, oldPath) => {
+                        if (path.dirname(oldPath) !== directory || !oldPath.endsWith(datedSuffix)) {
+                            oldStream.end();
+                            this.storeStreams.delete(oldPath);
+                        }
+                    });
                     stream = fs.createWriteStream(filePath, { flags: 'a' });
                     stream.on('error', (error) => console.error('Logger store write failed:', error));
                     this.storeStreams.set(filePath, stream);

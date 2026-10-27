@@ -415,8 +415,8 @@ export class AgentClient {
      * @returns `Ok(value)` or `Err` with an {@link AgentClientError}. Never rejects.
      *
      * @remarks
-     * The client never closes the `post` stream itself; the server closes it after replying. After a timeout the stream is left
-     * for the server or the heartbeat to clean up.
+     * After a valid reply the server closes the `post` stream. When the read times out or the reply is malformed, the client
+     * closes the stream with `Error` itself, so nothing is left open.
      *
      * @example
      * ```ts
@@ -437,10 +437,12 @@ export class AgentClient {
         }
         const readResult = await stream.unwrap().read<{ ok: boolean; v: TResult; e: E }>(hp);
         if (readResult.isErr()) {
+            stream.unwrap().closeErr();
             return new Err(new CommunicationClientAgentError(readResult.e));
         }
         const read = readResult.unwrap();
         if (typeof read !== 'object' || read === null || !('ok' in read)) {
+            stream.unwrap().closeErr();
             return new Err(new CommunicationClientAgentError('Format'));
         }
         if (read.ok === true) {
@@ -529,7 +531,8 @@ export class Client {
      * ```
      */
     constructor({ host, wsHost, mount, token, hp, connectTimeout, maxReconnectAttempts }: ClientOptions) {
-        this.mount = mount ? `/${trimSlash(mount)}` : '';
+        const trimmedMount = mount ? trimSlash(mount) : '';
+        this.mount = trimmedMount ? `/${trimmedMount}` : '';
         this.token = token;
         this.host = host;
         this.wsHost = wsHost;
@@ -846,9 +849,9 @@ export class Client {
     /**
      * Connects to the WebSocket endpoint `name` (optionally with `arg`) and resolves once the server has accepted it.
      *
-     * The URL is `${wsHost}${mount}/ws/<name>` or `${wsHost}${mount}/ws/<name>/<arg>`; `name` and `arg` are inserted as-is, so
-     * encode them if they may contain reserved characters. The returned {@link Socket} stays usable across network drops: the
-     * client reconnects in the background and the connection resumes on the new WebSocket.
+     * The URL is `${wsHost}${mount}/ws/<name>` or `${wsHost}${mount}/ws/<name>/<arg>`; `name` and `arg` are URL-encoded, so pass
+     * them unencoded. The returned {@link Socket} stays usable across network drops: the client reconnects in the background and
+     * the connection resumes on the new WebSocket.
      *
      * Close codes are handled as follows (before and after acceptance):
      *
@@ -883,8 +886,8 @@ export class Client {
      * ```
      */
     connect(name: string, arg?: string): Promise<Result<Socket, ConnectFail>> {
-        const pathArg = arg ? `/${arg}` : '';
-        const url = `${this.wsHost}${this.mount}/ws/${name}${pathArg}`;
+        const pathArg = arg ? `/${encodeURIComponent(arg)}` : '';
+        const url = `${this.wsHost}${this.mount}/ws/${encodeURIComponent(name)}${pathArg}`;
         let connection!: Connection;
         const [promise, resolve] = deal<Result<Socket, ConnectFail>>();
         let reconnectAttempts = 0;
@@ -929,6 +932,10 @@ export class Client {
             },
             onDisconnect: (code: number) => {
                 clearStableTimer();
+                if (connection.dead) {
+                    // A close that follows destroy() (e.g. after connectTimeout) must not schedule a reconnect.
+                    return;
+                }
                 switch (code) {
                     case WsCloseCodes.ConcurrentConnection: {
                         clearTimers();

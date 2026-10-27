@@ -680,13 +680,18 @@ export class Connection {
         return ok();
     }
 
-    /** Handles `close_stream`: closes the local side of the stream with the peer's code, without replying. Unknown ids are ignored. */
+    /**
+     * Handles `close_stream`: closes the local side of the stream with the peer's code, without replying. Unknown ids are ignored,
+     * and codes that are not a {@link StreamCloseCodes} value are reported as `Error` (an empty code would otherwise leave
+     * `waitClose()` pending forever).
+     */
     private onCloseStream(data: { id: string; code: string }): void {
         const stream = this.streams.get(data.id);
         if (!stream) {
             return;
         }
-        stream.onClose(data.code as StreamCloseCode);
+        const knownCode = (Object.values(StreamCloseCode) as string[]).includes(data.code);
+        stream.onClose(knownCode ? (data.code as StreamCloseCode) : StreamCloseCode.Error);
     }
 
     /**
@@ -694,8 +699,9 @@ export class Connection {
      *
      * In this order it marks the connection dead, resolves {@link Connection.closePromise} with `closeCode`, stops the tick timer,
      * closes every live stream with `Lost` (sending `close_stream`, best effort), rejects queued stream requests with `Lost`,
-     * closes the socket with 4000 ({@link WsCloseCodes.Normal}), resolves waiting {@link Connection.acquireStream} calls with
-     * {@link SocketErr.Closed}, and finally calls {@link ConnectionInterface.onDestroy}.
+     * closes the socket — with 4401 ({@link WsCloseCodes.Unauthorized}) when `closeCode` is {@link CloseCodes.Unauthorized}, so
+     * the peer learns why (for example on logout), otherwise with 4000 ({@link WsCloseCodes.Normal}) — resolves waiting
+     * {@link Connection.acquireStream} calls with {@link SocketErr.Closed}, and finally calls {@link ConnectionInterface.onDestroy}.
      *
      * @param closeCode - The reason, reported by {@link Connection.closePromise} and `Socket.waitClose()`.
      *
@@ -720,7 +726,7 @@ export class Connection {
         });
         this.streamQueue.clear();
         if (this.ws) {
-            this.ws.close(WsCloseCodes.Normal);
+            this.ws.close(closeCode === CloseCodes.Unauthorized ? WsCloseCodes.Unauthorized : WsCloseCodes.Normal);
         }
         this.promises.forEach((promise) => {
             promise(new Err(SocketErr.Closed));

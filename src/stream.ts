@@ -3,6 +3,16 @@ import { NewStreamType } from './messages.js';
 import { uuid } from './utils/index.js';
 import { deal, Err, Ok, Result } from './utils/result.js';
 
+/** Whether `JSON.stringify` can serialise `data` (it throws for circular structures and BigInt values). */
+function isSerializable(data: unknown): boolean {
+    try {
+        JSON.stringify(data);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
 /**
  * Errors returned by {@link Stream.read} and {@link Stream.write}.
  *
@@ -31,6 +41,11 @@ export enum StreamErr {
     Concurrent = 'Concurrent',
     /** `read(hp)` received nothing within `hp` ticks. The stream stays open and can be read again. */
     Timeout = 'Timeout',
+    /**
+     * `write()` was given data that `JSON.stringify` cannot serialise (for example a circular object or a `BigInt`). Nothing was
+     * sent or queued, and the stream stays open.
+     */
+    Invalid = 'Invalid',
 }
 
 /**
@@ -261,12 +276,9 @@ export class Stream<TArgs = unknown, TDataIn = unknown, TDataOut = unknown> {
      *
      * @typeParam T - Message type, `TDataOut` by default.
      * @param data - A JSON-serialisable message. `undefined` is allowed and is read back as `undefined`.
-     * @returns `Ok` once the message was handed to the WebSocket (not when the peer received it), or `Err(StreamErr.Dead)` when
-     * the stream is or becomes closed first. Never rejects.
-     *
-     * @remarks
-     * A value that `JSON.stringify` cannot serialise (a circular structure, a BigInt) is never sent: it stays at the head of the
-     * outgoing queue and holds back every later write until the queue overflows. Serialise defensively.
+     * @returns `Ok` once the message was handed to the WebSocket (not when the peer received it), `Err(StreamErr.Invalid)` when
+     * `JSON.stringify` cannot serialise `data` (a circular structure, a BigInt; nothing is sent or queued and the stream stays
+     * open), or `Err(StreamErr.Dead)` when the stream is or becomes closed first. Never rejects.
      *
      * @example
      * ```ts
@@ -470,7 +482,8 @@ export abstract class StreamController<TArgs = unknown, TDataIn = unknown, TData
      *
      * @typeParam T - Message type.
      * @param data - A JSON-serialisable message.
-     * @returns `Ok` once the message was handed to the socket, or `Err(StreamErr.Dead)`.
+     * @returns `Ok` once the message was handed to the socket, `Err(StreamErr.Invalid)` if `data` cannot be serialised, or
+     * `Err(StreamErr.Dead)`.
      */
     write<T = TDataOut>(data: T): Promise<Result<void, StreamErr>> {
         const [promise, resolve] = deal<Result<void, StreamErr>>();
@@ -491,6 +504,12 @@ export abstract class StreamController<TArgs = unknown, TDataIn = unknown, TData
                 resolve(new Ok(undefined));
                 return promise;
             }
+        }
+        // Checked only on the queueing path: queued data is retried until it is sent, so unserialisable data would block the
+        // queue for good.
+        if (!isSerializable(data)) {
+            resolve(new Err(StreamErr.Invalid));
+            return promise;
         }
         if (this.outgoingQueue.length >= this._outgoingQueueCap) {
             this.close(StreamCloseCodes.Error);

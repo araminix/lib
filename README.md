@@ -2,7 +2,7 @@
 
 > **Universal, type-safe multiplexed WebSocket streaming and functional communication protocol.**
 
-[![npm version](https://img.shields.io/badge/npm-3.0.2-blue.svg)](https://www.npmjs.com/package/@araminix/lib)
+[![npm version](https://img.shields.io/badge/npm-3.1.0-blue.svg)](https://www.npmjs.com/package/@araminix/lib)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-7-blue.svg)](https://www.typescriptlang.org/)
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D22-green.svg)](https://nodejs.org/)
@@ -431,7 +431,7 @@ There is no end-to-end flow control: [`Stream.write()`](#streamwrite) resolves a
 - Awaiting each write is the simplest backpressure: while offline, the producer waits instead of filling the queue.
 - If you fire writes without awaiting them, watch [`outgoingQueueLength`](#stream) and pause well below the cap.
 - [`closeOk()`](#stream) discards queued writes; await them first if they must be delivered.
-- Payloads must be JSON-serialisable. A value `JSON.stringify` rejects (circular structure, BigInt) is never sent and blocks the queue.
+- Payloads must be JSON-serialisable. A value `JSON.stringify` rejects (circular structure, BigInt) is never sent or queued: that `write()` resolves [`StreamErr.Invalid`](#streamerr) and the stream stays open.
 
 **Incoming.** A message is handed to the waiting [`read()`](#streamread) or, if none is waiting, buffered. When a message arrives while [`incomingQueueCap`](#stream) messages (default 256) are already buffered, the stream is closed with `StreamCloseCodes.Error`; the buffered messages remain readable. Keep a read pending on busy streams, and raise the cap right after obtaining the stream if the peer sends bursts.
 
@@ -594,7 +594,7 @@ Entry point for talking to an [`@araminix/platform`](#related-packages) server (
 connect(name: string, arg?: string): Promise<Result<Socket, ConnectFail>>
 ```
 
-Opens the WebSocket endpoint `${wsHost}${mount}/ws/<name>[/<arg>]` and resolves once the server sends `accept_endpoint`. `name` and `arg` are inserted as-is; encode them if they may contain reserved characters. In Node.js the token travels as the `x-token` header; browsers rely on the session cookie. The returned [`Socket`](#socket) stays usable across network drops (see [Reconnects and resumption](#reconnects-and-resumption)).
+Opens the WebSocket endpoint `${wsHost}${mount}/ws/<name>[/<arg>]` and resolves once the server sends `accept_endpoint`. `name` and `arg` are URL-encoded for you, so pass them unencoded. In Node.js the token travels as the `x-token` header; browsers rely on the session cookie. The returned [`Socket`](#socket) stays usable across network drops (see [Reconnects and resumption](#reconnects-and-resumption)).
 
 | Parameter | Type     | Default     | Description                                                                          |
 | --------- | -------- | ----------- | ------------------------------------------------------------------------------------ |
@@ -756,7 +756,7 @@ if (task.isOk()) {
 post<TData, TResult, E>(name: string, data: TData, hp?: number): Promise<Result<TResult, AgentClientError>>
 ```
 
-Opens an outgoing stream named `post` with the arguments `{ name, data }` and reads one reply. `{ ok: true, v }` becomes `Ok(v)`; `{ ok: false, e }` becomes `Err(new ExecutionClientAgentError(e))`; a failure to open the stream or to read the reply, or a reply without an `ok` field, becomes `Err(new CommunicationClientAgentError(cause))`. The client does not close the `post` stream itself; the server closes it after replying.
+Opens an outgoing stream named `post` with the arguments `{ name, data }` and reads one reply. `{ ok: true, v }` becomes `Ok(v)`; `{ ok: false, e }` becomes `Err(new ExecutionClientAgentError(e))`; a failure to open the stream or to read the reply, or a reply without an `ok` field, becomes `Err(new CommunicationClientAgentError(cause))`. After a valid reply the server closes the `post` stream; when the read times out or the reply is malformed, the client closes it with `Error` itself.
 
 | Parameter | Type     | Default  | Description                                                                                              |
 | --------- | -------- | -------- | -------------------------------------------------------------------------------------------------------- |
@@ -1045,7 +1045,7 @@ One logical endpoint connection: many streams multiplexed over a WebSocket that 
 | `deny()`                        | Server side: closes the socket with 4403 and destroys the connection with `CloseCodes.Unauthorized`.                                                                                                                                                                                                                                                 |
 | `acquireStream(name)`           | Implementation of [`Socket.incomingStream()`](#socketincomingstream).                                                                                                                                                                                                                                                                                |
 | `newOutgoingStream(name, args)` | Implementation of [`Socket.outgoingStream()`](#socketoutgoingstream).                                                                                                                                                                                                                                                                                |
-| `destroy(closeCode)`            | Idempotent teardown: marks the connection dead, resolves `closePromise`, stops the timer, closes streams and queued requests with `Lost`, closes the socket with 4000, fails waiting acquirers with `SocketErr.Closed` and calls `onDestroy`.                                                                                                        |
+| `destroy(closeCode)`            | Idempotent teardown: marks the connection dead, resolves `closePromise`, stops the timer, closes streams and queued requests with `Lost`, closes the socket with 4401 when `closeCode` is `CloseCodes.Unauthorized` (4000 otherwise), fails waiting acquirers with `SocketErr.Closed` and calls `onDestroy`.                                         |
 | `closePromise`                  | Resolves with the [`CloseCodes`](#closecodes) reason on destroy. Never rejects.                                                                                                                                                                                                                                                                      |
 | `dead`, `ws`, `arg`             | Whether it was destroyed; the attached WebSocket (or `undefined`); the endpoint argument.                                                                                                                                                                                                                                                            |
 | `write*(...)`                   | Low-level frame writers. Each returns `ok()` when the frame was handed to `ws.send()`, and `err()` when the payload is not JSON-serialisable, no socket is attached, `readyState` is not 1, or `send()` threw (the socket is then closed so the disconnect path runs).                                                                               |
@@ -1925,13 +1925,13 @@ logger.initStore({ directory: './logs', level: LOG_LEVEL.WARN, filePrefix: 'agen
 
 [`CloseCodes`](#closecodes), reported by [`Socket.waitClose()`](#socket), [`AgentClient.waitClose()`](#agentclient) and `Connection.closePromise`. The causes listed are the ones the client produces; servers pick their own codes when they call `destroy()`.
 
-| Value            | Cause on the client                                                                                            |
-| ---------------- | -------------------------------------------------------------------------------------------------------------- |
-| `'Died'`         | No WebSocket attached for `hp` ticks.                                                                          |
-| `'Unexpected'`   | Connect timeout, reconnect limit, close code 4404, no global `WebSocket`, or `accept()` could not be sent.     |
-| `'Intentional'`  | `Socket.destroy()` / `AgentClient.destroy()`, or the server closed with 4000 (e.g. after destroying its side). |
-| `'Concurrent'`   | Close code 4409: taken over by another connection.                                                             |
-| `'Unauthorized'` | Close code 4401 or 4403, or `Connection.deny()`.                                                               |
+| Value            | Cause on the client                                                                                                                                                                                                                              |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `'Died'`         | No WebSocket attached for `hp` ticks.                                                                                                                                                                                                            |
+| `'Unexpected'`   | Connect timeout, reconnect limit, close code 4404, no global `WebSocket`, or `accept()` could not be sent.                                                                                                                                       |
+| `'Intentional'`  | `Socket.destroy()` / `AgentClient.destroy()`, or the server closed with 4000 (e.g. after destroying its side). A server-side destroy with `Unauthorized` (for example on logout) arrives as 4401 and is reported as `'Unauthorized'` from 3.1.0. |
+| `'Concurrent'`   | Close code 4409: taken over by another connection.                                                                                                                                                                                               |
+| `'Unauthorized'` | Close code 4401 or 4403, or `Connection.deny()`.                                                                                                                                                                                                 |
 
 ### Connect failures
 
@@ -1964,6 +1964,7 @@ logger.initStore({ directory: './logs', level: LOG_LEVEL.WARN, filePrefix: 'agen
 | [`StreamErr`](#streamerr)         | `'Timeout'`        | `read(hp)`                                        | Nothing arrived within `hp` ticks; the stream is still open.                                         |
 | [`StreamErr`](#streamerr)         | `'Dead'`           | `read()`, `write()`                               | The stream is closed (for `read()`: and drained); for `write()`: closed before the message was sent. |
 | [`StreamErr`](#streamerr)         | `'Concurrent'`     | `read()`                                          | Another `read()` replaced this one.                                                                  |
+| [`StreamErr`](#streamerr)         | `'Invalid'`        | `write()`                                         | `JSON.stringify` cannot serialise the data; nothing was sent or queued and the stream stays open.    |
 | [`InitStreamErr`](#initstreamerr) | `'Dead'`           | `outgoingStream()`, `newOutgoingStream()`         | Connection dead, stream rejected or closed by the peer, or not accepted within 20 ticks.             |
 | [`InitStreamErr`](#initstreamerr) | `'Lost'`           | none                                              | Reserved; not produced by the current implementation.                                                |
 | [`SocketErr`](#socketerr)         | `0` (`Closed`)     | `incomingStream()`, `acquireStream()`, `onTask()` | The connection is or became dead.                                                                    |
@@ -1979,6 +1980,18 @@ Errors of [`AgentClient.post()`](#agentclientpost), discriminated by [`AgentClie
 | [`ExecutionClientAgentError`](#executionclientagenterror)         | `'Execution'`     | The `e` of the server's `{ ok: false, e }` reply.                                                                 |
 
 ## Migration notes
+
+### Upgrading to 3.1.0
+
+No breaking changes. Behaviour you may notice:
+
+- [`Stream.write()`](#streamwrite) resolves the new [`StreamErr.Invalid`](#streamerr) for data `JSON.stringify` cannot serialise, instead of queuing it forever. Exhaustive `switch` statements over `StreamErr` need the new member.
+- A connection destroyed with `CloseCodes.Unauthorized` closes its socket with 4401 instead of 4000, so the other side sees `Unauthorized` (for example after logout) instead of `Intentional`.
+- A `close_stream` frame with an unknown or empty code closes the stream with `Error`, so `waitClose()` always resolves.
+- [`Client.connect()`](#clientconnect) URL-encodes `name` and `arg`, and `mount: '/'` no longer produces `//` in URLs.
+- [`AgentClient.post()`](#agentclientpost) closes its stream after a timeout or a malformed reply.
+- A socket that closes after its connection was destroyed no longer schedules a reconnect timer.
+- The logger keeps the day's logs and errors files open side by side instead of reopening them whenever the level changes.
 
 ### Upgrading to 3.0.0
 
