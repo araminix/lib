@@ -1,6 +1,6 @@
 {
     "name": "@araminix/lib",
-    "version": "2.1.0",
+    "version": "2.1.1",
     "description": "Universal, type-safe multiplexed WebSocket streaming and functional communication protocol",
     "type": "module",
     "engines": {
@@ -53,10 +53,10 @@
         "test:coverage": "node --experimental-test-coverage --test 'dist/tests/**/*.test.js'"
     },
     "dependencies": {
-        "axios": "1.20.0",
-        "fp-ts": "2.16.11",
-        "gach": "1.7.5",
-        "io-ts": "2.2.22"
+        "axios": "^1.20.0",
+        "fp-ts": "^2.16.11",
+        "gach": "^1.7.5",
+        "io-ts": "^2.2.22"
     },
     "devDependencies": {
         "@trivago/prettier-plugin-sort-imports": "6.0.2",
