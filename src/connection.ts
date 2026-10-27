@@ -15,15 +15,17 @@ export interface MinimalWebSocket {
 }
 
 const DEFAULT_HP = 300; // seconds (60 * 5) 5 minutes
+const DEFAULT_STREAM_REQUEST_HP = 10; // seconds a new_stream request waits for an acquirer
 
 class StreamRequest {
     message: { id: string; name: string; args: unknown };
     onCancel: () => void;
-    hp: number = 10;
+    hp: number;
 
-    constructor(message: { id: string; name: string; args: unknown }, onCancel: () => void) {
+    constructor(message: { id: string; name: string; args: unknown }, onCancel: () => void, hp: number = DEFAULT_STREAM_REQUEST_HP) {
         this.message = message;
         this.onCancel = onCancel;
+        this.hp = hp;
     }
 
     damage(): void {
@@ -236,7 +238,7 @@ export class Connection {
                 try {
                     const raw = typeof message.data === 'string' ? message.data : message.data.toString();
                     const data = JSON.parse(raw);
-                    logger.trace(`WS Connection - onMessage: ${JSON.stringify(data)}`);
+                    logger.trace('WS Connection - onMessage:', raw);
                     this.onIncoming(data);
                 } catch (error) {
                     logger.error(`WS Connection - onMessage JSON Parse Error:`, error);
@@ -336,8 +338,12 @@ export class Connection {
     }
 
     private onNewStream(data: { id: string; name: string; args: unknown }): void {
-        if (this.streams.has(data.id)) {
+        if (this.streams.has(data.id) || this.isQueued(data.id)) {
             this.writeClose(data.id, StreamCloseCode.Duplicate);
+            return;
+        }
+        if (this.inter.maxPendingStreams !== undefined && this.pendingStreamCount() >= this.inter.maxPendingStreams) {
+            this.writeClose(data.id, StreamCloseCode.Error);
             return;
         }
         const streamRequest = new StreamRequest(data, () => {
@@ -355,12 +361,29 @@ export class Connection {
                 return;
             }
             this.streamQueue.set(data.name, newRequests);
-        });
+        }, this.inter.streamRequestHp);
         if (!this.streamQueue.has(data.name)) {
             this.streamQueue.set(data.name, []);
         }
         this.streamQueue.get(data.name)!.push(streamRequest);
         this.roll();
+    }
+
+    private isQueued(id: string): boolean {
+        for (const requests of this.streamQueue.values()) {
+            if (requests.some((request) => request.id === id)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private pendingStreamCount(): number {
+        let count = 0;
+        this.streamQueue.forEach((requests) => {
+            count += requests.length;
+        });
+        return count;
     }
 
     private write(message: unknown): R {
@@ -371,7 +394,7 @@ export class Connection {
             return err();
         }
         const ws = this.ws;
-        if (!ws || ws.readyState !== 1) {
+        if (!ws || (ws.readyState !== undefined && ws.readyState !== 1)) {
             return err();
         }
         try {
@@ -422,6 +445,8 @@ export class Connection {
 
 export interface ConnectionInterface {
     hp?: number;
+    streamRequestHp?: number;
+    maxPendingStreams?: number;
     onDestroy: () => void;
     onDisconnect: (code: number) => void;
     onAccept: () => void;

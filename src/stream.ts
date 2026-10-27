@@ -46,7 +46,7 @@ export class Stream<TArgs = unknown, TDataIn = unknown, TDataOut = unknown> {
     }
 
     get args(): Readonly<TArgs> {
-        return Object.freeze(this.controller.args);
+        return this.controller.args;
     }
 
     get incomingQueueCap(): number {
@@ -289,9 +289,7 @@ export abstract class StreamController<TArgs = unknown, TDataIn = unknown, TData
         if (!this._weak && this.outgoingQueue.length > 0) {
             this.flushOutgoing();
         }
-        if (!this.weak) {
-            this.tic();
-        }
+        this.tic();
     }
 
     protected tic(): void {}
