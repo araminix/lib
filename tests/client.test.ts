@@ -101,7 +101,7 @@ describe('Client Session Security and Headers', () => {
             assert.ok(res.isOk());
             assert.strictEqual(deleteCall.url, 'http://127.0.0.1:3000/2fa/disable');
             assert.strictEqual(deleteCall.config.data, undefined);
-            assert.deepStrictEqual(deleteCall.config.headers, { 'x-token': 'user-token' });
+            assert.deepStrictEqual(deleteCall.config.headers, { 'X-Requested-With': 'XMLHttpRequest', 'x-token': 'user-token' });
         } finally {
             axios.delete = originalDelete;
         }
@@ -124,9 +124,33 @@ describe('Client Session Security and Headers', () => {
             assert.ok(res.isOk());
             assert.strictEqual(deleteCall.url, 'http://127.0.0.1:3000/2fa/disable');
             assert.deepStrictEqual(deleteCall.config.data, { code: '123456' });
-            assert.deepStrictEqual(deleteCall.config.headers, { 'x-token': 'user-token' });
+            assert.deepStrictEqual(deleteCall.config.headers, { 'X-Requested-With': 'XMLHttpRequest', 'x-token': 'user-token' });
         } finally {
             axios.delete = originalDelete;
+        }
+    });
+
+    it('sends X-Requested-With without x-token on cookie-authenticated (browser) requests', async () => {
+        const originalPost = axios.post;
+        const postCalls: Array<{ url: string; config: any }> = [];
+        (axios as any).post = async (url: string, _data: any, config: any) => {
+            postCalls.push({ url, config });
+            return { data: { id: 'f1', name: 'a.txt', size: 1, mimetype: 'text/plain', userId: 'u1' } };
+        };
+        try {
+            const client = new Client({
+                host: 'http://127.0.0.1:3000',
+                wsHost: 'ws://127.0.0.1:3000',
+            });
+            assert.ok((await client.request2FA()).isOk());
+            assert.ok((await client.upload('file-content')).isOk());
+            assert.strictEqual(postCalls.length, 2);
+            for (const call of postCalls) {
+                assert.deepStrictEqual(call.config.headers, { 'X-Requested-With': 'XMLHttpRequest' });
+                assert.strictEqual(call.config.withCredentials, true);
+            }
+        } finally {
+            axios.post = originalPost;
         }
     });
 });
@@ -331,7 +355,7 @@ describe('Client Connection Lifecycle, Timeouts, and Backoff', () => {
         }
     });
 
-    it('resets exponential backoff on ws.onopen', async () => {
+    it('keeps growing the backoff when a socket opens and closes immediately', async () => {
         const scheduledDelays: number[] = [];
         const originalSetTimeout = globalThis.setTimeout;
         const originalRandom = Math.random;
@@ -352,11 +376,11 @@ describe('Client Connection Lifecycle, Timeouts, and Backoff', () => {
 
         try {
             Math.random = () => 0.5;
-            let reconnectCallback: Function | undefined;
+            let lastCallback: Function | undefined;
 
             (globalThis as any).setTimeout = function (cb: Function, delay: number) {
                 scheduledDelays.push(delay);
-                reconnectCallback = cb;
+                lastCallback = cb;
                 return 123;
             };
 
@@ -370,21 +394,77 @@ describe('Client Connection Lifecycle, Timeouts, and Backoff', () => {
             // Disconnect 1 -> delay 500
             currentWs.onclose({ code: 1006 });
             assert.strictEqual(scheduledDelays[scheduledDelays.length - 1], 500);
-
-            // Simulate reconnect callback firing -> new currentWs created
-            reconnectCallback!();
+            lastCallback!();
 
             // Disconnect 2 -> delay 1000
             currentWs.onclose({ code: 1006 });
             assert.strictEqual(scheduledDelays[scheduledDelays.length - 1], 1000);
+            lastCallback!();
 
-            // Reconnect again -> new ws created
-            reconnectCallback!();
-
-            // New ws fires onopen -> backoff resets!
+            // Server opens the socket and closes it right away (e.g. 1011 during an outage)
             currentWs.onopen();
+            assert.strictEqual(scheduledDelays[scheduledDelays.length - 1], 5000, 'opening schedules the stability check');
+            currentWs.onclose({ code: WsCloseCodes.InternalError });
 
-            // Disconnect 3 -> delay should be 500 again!
+            // Backoff must not reset: attempt 2 -> 2000
+            assert.strictEqual(scheduledDelays[scheduledDelays.length - 1], 2000);
+        } finally {
+            globalThis.setTimeout = originalSetTimeout;
+            Math.random = originalRandom;
+        }
+    });
+
+    it('resets exponential backoff once a reopened socket stays open for the stable period', async () => {
+        const scheduledDelays: number[] = [];
+        const originalSetTimeout = globalThis.setTimeout;
+        const originalRandom = Math.random;
+
+        let currentWs: any;
+        (WS as any).w3cwebsocket = function () {
+            currentWs = {
+                readyState: 1,
+                send: () => {},
+                close: () => {},
+                onopen: null,
+                onerror: null,
+                onclose: null,
+                onmessage: null,
+            };
+            return currentWs;
+        };
+
+        try {
+            Math.random = () => 0.5;
+            let lastCallback: Function | undefined;
+
+            (globalThis as any).setTimeout = function (cb: Function, delay: number) {
+                scheduledDelays.push(delay);
+                lastCallback = cb;
+                return 123;
+            };
+
+            const client = new Client({
+                host: 'http://127.0.0.1:3000',
+                wsHost: 'ws://127.0.0.1:3000',
+            });
+
+            client.connect('agent');
+
+            // Disconnect 1 -> delay 500
+            currentWs.onclose({ code: 1006 });
+            lastCallback!();
+
+            // Disconnect 2 -> delay 1000
+            currentWs.onclose({ code: 1006 });
+            assert.strictEqual(scheduledDelays[scheduledDelays.length - 1], 1000);
+            lastCallback!();
+
+            // New ws opens and stays open for the stable period
+            currentWs.onopen();
+            assert.strictEqual(scheduledDelays[scheduledDelays.length - 1], 5000);
+            lastCallback!();
+
+            // Disconnect 3 -> delay should be 500 again
             currentWs.onclose({ code: 1006 });
             assert.strictEqual(scheduledDelays[scheduledDelays.length - 1], 500);
         } finally {

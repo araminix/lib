@@ -8,6 +8,8 @@ import { deal, Err, Ok, Result } from './utils/result.js';
 
 export const axiosService = axios;
 
+const RECONNECT_STABLE_MS = 5000; // a reopened socket must stay up this long before the backoff resets
+
 export interface FileInfo {
     name: string;
     size: number;
@@ -128,8 +130,17 @@ export class Client {
         this.maxReconnectAttempts = maxReconnectAttempts;
     }
 
+    private requestHeaders(): Record<string, string> {
+        // The server rejects cookie-authenticated mutations without JSON or this header (CSRF guard).
+        const headers: Record<string, string> = { 'X-Requested-With': 'XMLHttpRequest' };
+        if (this.token) {
+            headers['x-token'] = this.token;
+        }
+        return headers;
+    }
+
     async auth<TAuthData = unknown, TAuthResponse = unknown, TErr = unknown>(data: TAuthData): Promise<Result<AxiosResponse<TAuthResponse>, TErr>> {
-        const headers: Record<string, string> = this.token ? { 'x-token': this.token } : {};
+        const headers = this.requestHeaders();
         const res = await wrap<AxiosResponse<TAuthResponse>, TErr>(axios.post(`${this.host}${this.mount}/auth`, data, { headers, withCredentials: true }));
         if (res.isOk()) return new Ok(res.v);
         return new Err(res.e);
@@ -137,42 +148,42 @@ export class Client {
 
     async gauth<TResponse = unknown, TErr = unknown>(access_token: string): Promise<Result<AxiosResponse<TResponse>, TErr | void>> {
         if (!access_token) return new Err<void, AxiosResponse<TResponse>>(undefined);
-        const headers: Record<string, string> = this.token ? { 'x-token': this.token } : {};
+        const headers = this.requestHeaders();
         const res = await wrap<AxiosResponse<TResponse>, TErr>(axios.post(`${this.host}${this.mount}/gauth`, { access_token }, { headers, withCredentials: true }));
         if (res.isOk()) return new Ok(res.v);
         return new Err(res.e);
     }
 
     async deauth(): Promise<Ok<void> | Err<void, void>> {
-        const headers: Record<string, string> = this.token ? { 'x-token': this.token } : {};
+        const headers = this.requestHeaders();
         const res = await wrap(axios.delete(`${this.host}${this.mount}/auth`, { headers, withCredentials: true }));
         if (res.isOk()) return ok();
         return err();
     }
 
     async request2FA<T = unknown, E = unknown>(): Promise<Result<AxiosResponse<T>, E>> {
-        const headers: Record<string, string> = this.token ? { 'x-token': this.token } : {};
+        const headers = this.requestHeaders();
         const res = await wrap<AxiosResponse<T>, E>(axios.post(`${this.host}${this.mount}/2fa/request`, undefined, { headers, withCredentials: true }));
         if (res.isOk()) return new Ok(res.v);
         return new Err(res.e);
     }
 
     async enable2FA<T = unknown, E = unknown>(secret: string, code: string): Promise<Result<AxiosResponse<T>, E>> {
-        const headers: Record<string, string> = this.token ? { 'x-token': this.token } : {};
+        const headers = this.requestHeaders();
         const res = await wrap<AxiosResponse<T>, E>(axios.post(`${this.host}${this.mount}/2fa/enable`, { secret, code }, { headers, withCredentials: true }));
         if (res.isOk()) return new Ok(res.v);
         return new Err(res.e);
     }
 
     async verify2FA<T = unknown, E = unknown>(accountName: string, code: string, uuid: string): Promise<Result<AxiosResponse<T>, E>> {
-        const headers: Record<string, string> = this.token ? { 'x-token': this.token } : {};
+        const headers = this.requestHeaders();
         const res = await wrap<AxiosResponse<T>, E>(axios.post(`${this.host}${this.mount}/2fa/verify`, { accountName, code, uuid }, { headers, withCredentials: true }));
         if (res.isOk()) return new Ok(res.v);
         return new Err(res.e);
     }
 
     async disable2FA<T = unknown, E = unknown>(code?: string): Promise<Result<AxiosResponse<T>, E>> {
-        const headers: Record<string, string> = this.token ? { 'x-token': this.token } : {};
+        const headers = this.requestHeaders();
         const res = await wrap<AxiosResponse<T>, E>(
             axios.delete(`${this.host}${this.mount}/2fa/disable`, {
                 headers,
@@ -187,7 +198,7 @@ export class Client {
     async upload(file: string | Blob): Promise<Result<FileInfo, void>> {
         const form = new FormData();
         form.append('file', file);
-        const headers: Record<string, string> = this.token ? { 'x-token': this.token } : {};
+        const headers = this.requestHeaders();
         const res = await wrap<AxiosResponse<FileInfo>>(axios.post(`${this.host}${this.mount}/file`, form, { headers, withCredentials: true }));
         if (res.isOk()) return new Ok(res.v.data);
         return new Err<void, FileInfo>(undefined);
@@ -201,14 +212,14 @@ export class Client {
     }
 
     async getPresignedUploadUrl<T = unknown, E = unknown>(): Promise<Result<AxiosResponse<T>, E>> {
-        const headers: Record<string, string> = this.token ? { 'x-token': this.token } : {};
+        const headers = this.requestHeaders();
         const res = await wrap<AxiosResponse<T>, E>(axios.post(`${this.host}${this.mount}/storage/upload`, undefined, { headers, withCredentials: true }));
         if (res.isOk()) return new Ok(res.v);
         return new Err(res.e);
     }
 
     async getPresignedDownloadUrl<T = unknown, E = unknown>(fileId: string): Promise<Result<AxiosResponse<T>, E>> {
-        const headers: Record<string, string> = this.token ? { 'x-token': this.token } : {};
+        const headers = this.requestHeaders();
         const res = await wrap<AxiosResponse<T>, E>(axios.get(`${this.host}${this.mount}/storage/${fileId}`, { headers, withCredentials: true }));
         if (res.isOk()) return new Ok(res.v);
         return new Err(res.e);
@@ -239,6 +250,14 @@ export class Client {
         let reconnectAttempts = 0;
         let reconnectTimer: NodeJS.Timeout | undefined;
         let connectTimer: NodeJS.Timeout | undefined;
+        let stableTimer: NodeJS.Timeout | undefined;
+
+        const clearStableTimer = () => {
+            if (stableTimer) {
+                clearTimeout(stableTimer);
+                stableTimer = undefined;
+            }
+        };
 
         const clearTimers = () => {
             if (connectTimer) {
@@ -249,6 +268,7 @@ export class Client {
                 clearTimeout(reconnectTimer);
                 reconnectTimer = undefined;
             }
+            clearStableTimer();
         };
 
         const inter = {
@@ -258,9 +278,17 @@ export class Client {
                 resolve(new Err(ConnectFail.Unexpected));
             },
             onOpen: () => {
-                reconnectAttempts = 0;
+                clearStableTimer();
+                stableTimer = setTimeout(() => {
+                    stableTimer = undefined;
+                    reconnectAttempts = 0;
+                }, RECONNECT_STABLE_MS);
+                if (typeof stableTimer.unref === 'function') {
+                    stableTimer.unref();
+                }
             },
             onDisconnect: (code: number) => {
+                clearStableTimer();
                 switch (code) {
                     case WsCloseCodes.ConcurrentConnection: {
                         clearTimers();
