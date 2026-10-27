@@ -4,7 +4,7 @@
 
 [![npm version](https://img.shields.io/badge/version-1.0.0-blue.svg)](https://www.npmjs.com/package/@araminix/lib)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.4-blue.svg)](https://www.typescriptlang.org/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-7.0-blue.svg)](https://www.typescriptlang.org/)
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D20.0.0-green.svg)](https://nodejs.org/)
 
 **Araminix Lib** (`@araminix/lib`) provides the foundational communication layer for modern real-time applications. Designed to be completely **isomorphic**, it runs seamlessly across **Node.js**, **Web Browsers**, **Web Workers**, and modern frontend frameworks (React, Vue, Svelte, Angular).
@@ -74,12 +74,15 @@ yarn add @araminix/lib
 ```typescript
 import { Client, Socket, Stream } from '@araminix/lib';
 
-// Connect client to a WebSocket endpoint
+// HTTP calls go to `host`, WebSocket endpoints to `${wsHost}${mount}/ws/<endpoint>[/<arg>]`
 const client = new Client({
-    url: 'wss://api.example.com/ws/session',
+    host: 'https://api.example.com',
+    wsHost: 'wss://api.example.com',
+    connectTimeout: 10000,
 });
 
-const connectResult = await client.connect();
+// Connects to wss://api.example.com/ws/session
+const connectResult = await client.connect('session');
 
 if (connectResult.isOk()) {
     const socket: Socket = connectResult.unwrap();
