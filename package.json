@@ -1,6 +1,6 @@
 {
     "name": "@araminix/lib",
-    "version": "3.0.1",
+    "version": "3.0.2",
     "description": "Universal, type-safe multiplexed WebSocket streaming and functional communication protocol",
     "type": "module",
     "engines": {
