@@ -212,6 +212,7 @@ export class Connection {
         ws.onopen = () => {
             if (this.ws === ws) {
                 this.hp = this.inter.hp ?? DEFAULT_HP;
+                this.roll();
             }
         };
         ws.onerror = (event: any) => {
@@ -362,13 +363,24 @@ export class Connection {
     }
 
     private write(message: unknown): R {
-        if (!this.ws) {
+        let payload: string;
+        try {
+            payload = JSON.stringify(message);
+        } catch {
+            return err();
+        }
+        const ws = this.ws;
+        if (!ws || ws.readyState !== 1) {
             return err();
         }
         try {
-            this.ws.send(JSON.stringify(message));
+            ws.send(payload);
         } catch {
-            this.ws = undefined;
+            try {
+                ws.close();
+            } catch {
+                // ignore
+            }
             return err();
         }
         return ok();

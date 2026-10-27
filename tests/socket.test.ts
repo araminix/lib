@@ -63,4 +63,142 @@ describe('Socket and Connection Lifecycle', () => {
         socket.destroy();
         assert.strictEqual(destroyed, true);
     });
+
+    it('does not send or clear ws when readyState is not open (readyState !== 1)', () => {
+        let sendCalled = false;
+        const mockWs = {
+            readyState: 0, // Connecting
+            send: () => {
+                sendCalled = true;
+            },
+            close: () => {},
+            onopen: null,
+            onerror: null,
+            onclose: null,
+            onmessage: null,
+        };
+        const mockDriver = {
+            onDestroy: () => {},
+            onDisconnect: () => {},
+            onAccept: () => {},
+        };
+        const conn = new Connection(mockDriver, 'test');
+        conn.connect(mockWs as any);
+
+        const res = conn.writeData('stream-1', 'payload');
+        assert.strictEqual(res.isErr(), true);
+        assert.strictEqual(sendCalled, false);
+        assert.strictEqual(conn.ws, mockWs);
+    });
+
+    it('handles JSON.stringify failures gracefully without clearing ws or closing', () => {
+        let sendCalled = false;
+        let closeCalled = false;
+        const mockWs = {
+            readyState: 1, // Open
+            send: () => {
+                sendCalled = true;
+            },
+            close: () => {
+                closeCalled = true;
+            },
+            onopen: null,
+            onerror: null,
+            onclose: null,
+            onmessage: null,
+        };
+        const mockDriver = {
+            onDestroy: () => {},
+            onDisconnect: () => {},
+            onAccept: () => {},
+        };
+        const conn = new Connection(mockDriver, 'test');
+        conn.connect(mockWs as any);
+
+        const circularObj: any = {};
+        circularObj.self = circularObj;
+
+        const res = conn.writeData('stream-1', circularObj);
+        assert.strictEqual(res.isErr(), true);
+        assert.strictEqual(sendCalled, false);
+        assert.strictEqual(closeCalled, false);
+        assert.strictEqual(conn.ws, mockWs);
+    });
+
+    it('calls ws.close() with no code and allows onclose to run onDisconnect when send throws', () => {
+        let closeArg: any = 'NOT_CALLED';
+        let disconnectedCode: number | undefined;
+
+        const mockWs: any = {
+            readyState: 1,
+            send: () => {
+                throw new Error('Network send error');
+            },
+            close: (code?: number) => {
+                closeArg = code;
+                if (mockWs.onclose) {
+                    mockWs.onclose({ code: code ?? 1006 });
+                }
+            },
+            onopen: null,
+            onerror: null,
+            onclose: null,
+            onmessage: null,
+        };
+        const mockDriver = {
+            onDestroy: () => {},
+            onDisconnect: (code: number) => {
+                disconnectedCode = code;
+            },
+            onAccept: () => {},
+        };
+        const conn = new Connection(mockDriver, 'test');
+        conn.connect(mockWs);
+
+        const res = conn.writeData('stream-1', 'payload');
+        assert.strictEqual(res.isErr(), true);
+        assert.strictEqual(closeArg, undefined); // called with NO code
+        assert.strictEqual(disconnectedCode, 1006); // onDisconnect successfully fired
+        assert.strictEqual(conn.ws, undefined); // cleaned up by onclose
+    });
+
+    it('flushes queued stream requests via roll() when ws.onopen fires', async () => {
+        const mockWs: any = {
+            readyState: 0, // Connecting
+            send: (data: string) => {},
+            close: () => {},
+            onopen: null,
+            onerror: null,
+            onclose: null,
+            onmessage: null,
+        };
+        const mockDriver = {
+            onDestroy: () => {},
+            onDisconnect: () => {},
+            onAccept: () => {},
+        };
+        const conn = new Connection(mockDriver, 'test');
+        conn.connect(mockWs);
+
+        const acquirePromise = conn.acquireStream('my-service');
+
+        // Message arrives while socket is still CONNECTING
+        mockWs.onmessage({
+            data: JSON.stringify({
+                type: 'new_stream',
+                id: 'stream-xyz',
+                name: 'my-service',
+                args: { foo: 'bar' },
+            }),
+        });
+
+        // Socket transitions to OPEN and fires onopen
+        mockWs.readyState = 1;
+        mockWs.onopen({});
+
+        // Queued stream should have been accepted and resolved
+        const result = await acquirePromise;
+        assert.strictEqual(result.isOk(), true);
+        assert.strictEqual(result.unwrap().id, 'stream-xyz');
+    });
 });
