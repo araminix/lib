@@ -2,9 +2,7 @@
  * Logger module for handling application logging with different levels and formats
  * @module logger
  */
-import fs from 'fs';
 import gach, { COLOR_NAMES } from 'gach';
-import path from 'path';
 
 export enum LOG_LEVEL {
     TRACE = 'trace',
@@ -16,8 +14,8 @@ export enum LOG_LEVEL {
 
 const LOG_PRIORITY: Record<LOG_LEVEL, number> = {
     [LOG_LEVEL.TRACE]: 0,
-    [LOG_LEVEL.INFO]: 1,
-    [LOG_LEVEL.DEBUG]: 2,
+    [LOG_LEVEL.DEBUG]: 1,
+    [LOG_LEVEL.INFO]: 2,
     [LOG_LEVEL.WARN]: 3,
     [LOG_LEVEL.ERROR]: 4,
 };
@@ -30,9 +28,15 @@ const LOG_COLORS: Record<LOG_LEVEL, string> = {
     [LOG_LEVEL.ERROR]: COLOR_NAMES.RED,
 };
 
+// Node's ESM loader exposes gach's CommonJS exports object (function on `.default`); bundlers often hand over the function itself.
+const paint: (text: string) => { color: (name: string) => { text: string } } = (gach as any).default ?? gach;
+
+const DEFAULT_FILE_PREFIX = 'folkrum';
+
 export interface StoreOptions {
     directory: string;
     level: LOG_LEVEL;
+    filePrefix?: string;
 }
 
 export interface LoggerConfig {
@@ -53,9 +57,59 @@ const DEFAULT_CONFIG: LoggerConfig = {
     prefix: null,
 };
 
+type NodeFs = typeof import('node:fs');
+type NodePath = typeof import('node:path');
+type NodeModules = { fs: NodeFs; path: NodePath };
+
+let nodeModules: Promise<NodeModules> | undefined;
+
+function loadNodeModules(): Promise<NodeModules> {
+    if (!nodeModules) {
+        // Loaded lazily (and hidden from bundlers) so browser builds never need fs/path; only file storage uses them.
+        const fsModule = 'node:fs';
+        const pathModule = 'node:path';
+        nodeModules = Promise.all([import(/* webpackIgnore: true */ /* @vite-ignore */ fsModule), import(/* webpackIgnore: true */ /* @vite-ignore */ pathModule)]).then(
+            ([fs, path]) => ({ fs, path }),
+        );
+    }
+    return nodeModules;
+}
+
+function stringifyArg(arg: unknown, showStackTrace: boolean): string {
+    if (arg instanceof Error) {
+        return showStackTrace && arg.stack ? arg.stack : `${arg.name}: ${arg.message}`;
+    }
+    if (typeof arg !== 'object' || arg === null) {
+        return String(arg);
+    }
+    try {
+        const seen = new WeakSet<object>();
+        return JSON.stringify(arg, (_key, value: unknown) => {
+            if (value instanceof Error) {
+                return { name: value.name, message: value.message, ...(showStackTrace && { stack: value.stack }) };
+            }
+            if (typeof value === 'bigint') {
+                return value.toString();
+            }
+            if (typeof value === 'object' && value !== null) {
+                if (seen.has(value)) {
+                    return '[Circular]';
+                }
+                seen.add(value);
+            }
+            return value;
+        });
+    } catch {
+        return '[Unserializable Object]';
+    }
+}
+
 export class Logger {
     private logPriority: number;
     private config: LoggerConfig = DEFAULT_CONFIG;
+    private storeReady?: Promise<string>;
+    private storeChain: Promise<void> = Promise.resolve();
+    private storeStreams: Map<string, ReturnType<NodeFs['createWriteStream']>> = new Map();
 
     constructor(options: LoggerConfig = DEFAULT_CONFIG) {
         this.configure(options);
@@ -66,6 +120,9 @@ export class Logger {
         this.config = { ...this.config, ...options };
         if (options.level) {
             this.logPriority = LOG_PRIORITY[options.level];
+        }
+        if (options.storeOptions !== undefined) {
+            this.storeReady = undefined;
         }
     }
 
@@ -80,29 +137,19 @@ export class Logger {
                     ...(this.config.showTimestamp && { timestamp }),
                     level: level.toUpperCase(),
                     prefix,
-                    message: args
-                        .map((arg) => {
-                            try {
-                                return typeof arg === 'object' ? JSON.stringify(arg) : String(arg);
-                            } catch {
-                                return '[Unserializable Object]';
-                            }
-                        })
-                        .join(' '),
+                    message: args.map((arg) => stringifyArg(arg, this.config.showStackTrace)).join(' '),
                 };
                 consoleFn(JSON.stringify(logObject));
             } else {
-                const coloredLevel = (gach as any).default(`[${level.toUpperCase()}]`).color(LOG_COLORS[level]).text;
-                const coloredTime = this.config.showTimestamp ? (gach as any).default(`[${timestamp}]`).color('blue').text + ' ' : '';
+                const coloredLevel = paint(`[${level.toUpperCase()}]`).color(LOG_COLORS[level]).text;
+                const coloredTime = this.config.showTimestamp ? paint(`[${timestamp}]`).color('blue').text + ' ' : '';
                 consoleFn(`${coloredTime}${coloredLevel}${prefix}`, ...args);
             }
         }
 
         if (this.config.storeOptions && LOG_PRIORITY[level] >= LOG_PRIORITY[this.config.storeOptions.level]) {
-            const formattedArgs = args.map((arg) => (typeof arg === 'object' ? JSON.stringify(arg) : String(arg))).join(' ');
-            const logMessage = `[${timestamp}] [${level.toUpperCase()}] ${formattedArgs}`;
-            const filePath = this.getLogFilePath(level);
-            fs.appendFileSync(filePath, logMessage + '\n');
+            const formattedArgs = args.map((arg) => stringifyArg(arg, this.config.showStackTrace)).join(' ');
+            this.store(level, `[${timestamp}] [${level.toUpperCase()}] ${formattedArgs}\n`);
         }
     }
 
@@ -114,22 +161,52 @@ export class Logger {
         return new Date().toISOString().split('T')[0];
     }
 
-    private getLogFilePath(level: LOG_LEVEL): string {
-        if (!this.config.storeOptions) {
-            throw new Error('Log directory is not initialized. Call initStore first.');
-        }
+    private getLogFileName(level: LOG_LEVEL): string {
         const date = Logger.getTodaysDate();
-        const fileName = level === LOG_LEVEL.ERROR ? `folkrum-errors-${date}.log` : `folkrum-logs-${date}.log`;
-        return path.join(this.config.storeOptions.directory, fileName);
+        const filePrefix = this.config.storeOptions?.filePrefix ?? DEFAULT_FILE_PREFIX;
+        return level === LOG_LEVEL.ERROR ? `${filePrefix}-errors-${date}.log` : `${filePrefix}-logs-${date}.log`;
+    }
+
+    private ensureStore(): Promise<string> {
+        if (!this.storeReady) {
+            const directory = this.config.storeOptions!.directory;
+            this.storeReady = loadNodeModules().then(({ fs, path }) => {
+                const absolutePath = path.resolve(directory);
+                fs.mkdirSync(absolutePath, { recursive: true });
+                return absolutePath;
+            });
+            // Mark as handled right away; store() reports the failure once it reaches this point in its chain.
+            this.storeReady.catch(() => {});
+        }
+        return this.storeReady;
+    }
+
+    private store(level: LOG_LEVEL, line: string): void {
+        const fileName = this.getLogFileName(level);
+        const ready = this.ensureStore();
+        this.storeChain = this.storeChain
+            .then(async () => {
+                const [directory, { fs, path }] = await Promise.all([ready, loadNodeModules()]);
+                const filePath = path.join(directory, fileName);
+                let stream = this.storeStreams.get(filePath);
+                if (!stream) {
+                    // A new file means a new day (or directory): release streams for the old files.
+                    this.storeStreams.forEach((oldStream) => oldStream.end());
+                    this.storeStreams.clear();
+                    stream = fs.createWriteStream(filePath, { flags: 'a' });
+                    stream.on('error', (error) => console.error('Logger store write failed:', error));
+                    this.storeStreams.set(filePath, stream);
+                }
+                stream.write(line);
+            })
+            .catch((error: unknown) => {
+                console.error('Logger store unavailable:', error);
+            });
     }
 
     initStore(options: StoreOptions): void {
-        const { directory, level } = options;
-        const absolutePath = path.resolve(directory);
-        if (!fs.existsSync(absolutePath)) {
-            fs.mkdirSync(absolutePath, { recursive: true });
-        }
-        this.config.storeOptions = { directory: absolutePath, level };
+        this.configure({ storeOptions: options });
+        this.ensureStore();
     }
 
     setLevel(level: LOG_LEVEL): void {
