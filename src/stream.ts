@@ -49,6 +49,30 @@ export class Stream<TArgs = unknown, TDataIn = unknown, TDataOut = unknown> {
         return Object.freeze(this.controller.args);
     }
 
+    get incomingQueueCap(): number {
+        return this.controller.incomingQueueCap;
+    }
+
+    set incomingQueueCap(cap: number) {
+        this.controller.incomingQueueCap = cap;
+    }
+
+    get outgoingQueueCap(): number {
+        return this.controller.outgoingQueueCap;
+    }
+
+    set outgoingQueueCap(cap: number) {
+        this.controller.outgoingQueueCap = cap;
+    }
+
+    get incomingQueueLength(): number {
+        return this.controller.incomingQueueLength;
+    }
+
+    get outgoingQueueLength(): number {
+        return this.controller.outgoingQueueLength;
+    }
+
     read<T = TDataIn>(hp: number = 30): Promise<Result<T, StreamErr>> {
         return this.controller.read<T>(hp);
     }
@@ -74,30 +98,61 @@ export abstract class StreamController<TArgs = unknown, TDataIn = unknown, TData
     private _weak: boolean = false;
     protected abstract hp: number;
     protected abstract weak: boolean;
-    private incomingData: unknown = undefined;
-    private outgoingData: unknown = undefined;
+    private incomingQueue: unknown[] = [];
+    private _incomingQueueCap: number = 256;
+    private outgoingQueue: Array<{ data: unknown; resolve: (val: Result<void, StreamErr>) => void }> = [];
+    private _outgoingQueueCap: number = 256;
     dead: boolean = false;
     closedCode: StreamCloseCodes | undefined = undefined;
     private readResolve?: (val: Result<any, StreamErr>) => void;
-    private writeResolve?: (val: Result<void, StreamErr>) => void;
     private readHp?: number;
     readonly closePromise: Promise<StreamCloseCodes>;
     private closeResolve: (val: StreamCloseCodes) => void;
 
-    constructor(connection: Connection) {
+    constructor(connection: Connection, incomingQueueCap: number = 256, outgoingQueueCap: number = 256) {
         this.connection = connection;
+        this._incomingQueueCap = incomingQueueCap;
+        this._outgoingQueueCap = outgoingQueueCap;
         [this.closePromise, this.closeResolve] = deal<StreamCloseCodes>();
     }
 
     abstract get id(): string;
     abstract get args(): TArgs;
 
+    get incomingQueueCap(): number {
+        return this._incomingQueueCap;
+    }
+
+    set incomingQueueCap(cap: number) {
+        this._incomingQueueCap = cap;
+    }
+
+    get outgoingQueueCap(): number {
+        return this._outgoingQueueCap;
+    }
+
+    set outgoingQueueCap(cap: number) {
+        this._outgoingQueueCap = cap;
+    }
+
+    get incomingQueueLength(): number {
+        return this.incomingQueue.length;
+    }
+
+    get outgoingQueueLength(): number {
+        return this.outgoingQueue.length;
+    }
+
     protected restoreHp(): void {
         this._weak = false;
         this._hp = this.hp;
+        this.flushOutgoing();
     }
 
     close(code: StreamCloseCodes): void {
+        if (this.dead) {
+            return;
+        }
         this.closedCode = code;
         this.connection.writeClose(this.id, code);
         this.destroy();
@@ -109,32 +164,60 @@ export abstract class StreamController<TArgs = unknown, TDataIn = unknown, TData
             resolve(new Err(StreamErr.Dead));
             return promise;
         }
-        if (this.writeResolve) {
-            this.writeResolve(new Err(StreamErr.Concurrent));
-            this.outgoingData = undefined;
+        if (this.outgoingQueue.length > 0) {
+            this.flushOutgoing();
         }
-        const result = this.connection.writeData(this.id, data);
-        if (result.isOk()) {
-            resolve(new Ok(undefined));
-            return promise;
-        }
-        this.writeResolve = resolve;
-        this.outgoingData = data;
-        return promise;
-    }
-
-    read<T = TDataIn>(hp: number): Promise<Result<T, StreamErr>> {
-        this.readHp = hp;
-        const [promise, resolve] = deal<Result<T, StreamErr>>();
         if (this.dead) {
             resolve(new Err(StreamErr.Dead));
             return promise;
         }
-        if (this.incomingData !== undefined) {
-            resolve(new Ok(this.incomingData as T));
-            this.incomingData = undefined;
+        if (this.outgoingQueue.length === 0 && !this._weak) {
+            const result = this.connection.writeData(this.id, data);
+            if (result.isOk()) {
+                resolve(new Ok(undefined));
+                return promise;
+            }
+        }
+        if (this.outgoingQueue.length >= this._outgoingQueueCap) {
+            this.close(StreamCloseCodes.Error);
+            resolve(new Err(StreamErr.Dead));
             return promise;
         }
+        this.outgoingQueue.push({ data, resolve });
+        return promise;
+    }
+
+    private flushOutgoing(): void {
+        if (this.dead || this._weak) {
+            return;
+        }
+        while (this.outgoingQueue.length > 0) {
+            const head = this.outgoingQueue[0];
+            const result = this.connection.writeData(this.id, head.data);
+            if (result.isOk()) {
+                this.outgoingQueue.shift();
+                head.resolve(new Ok(undefined));
+                if (this.dead || this._weak) {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+    }
+
+    read<T = TDataIn>(hp: number = 30): Promise<Result<T, StreamErr>> {
+        const [promise, resolve] = deal<Result<T, StreamErr>>();
+        if (this.incomingQueue.length > 0) {
+            const data = this.incomingQueue.shift();
+            resolve(new Ok(data as T));
+            return promise;
+        }
+        if (this.dead) {
+            resolve(new Err(StreamErr.Dead));
+            return promise;
+        }
+        this.readHp = hp;
         if (this.readResolve) {
             this.readResolve(new Err(StreamErr.Concurrent));
         }
@@ -143,18 +226,30 @@ export abstract class StreamController<TArgs = unknown, TDataIn = unknown, TData
     }
 
     onClose(code: StreamCloseCodes): void {
+        if (this.dead) {
+            return;
+        }
         this.closedCode = code;
         this.destroy();
     }
 
     onData<T = TDataIn>(data: T): void {
-        this.restoreHp();
-        if (this.readResolve) {
-            this.readResolve(new Ok(data));
-            this.readResolve = undefined;
+        if (this.dead) {
             return;
         }
-        this.incomingData = data;
+        this.restoreHp();
+        if (this.readResolve) {
+            const resolve = this.readResolve;
+            this.readResolve = undefined;
+            this.readHp = undefined;
+            resolve(new Ok(data));
+            return;
+        }
+        if (this.incomingQueue.length >= this._incomingQueueCap) {
+            this.close(StreamCloseCodes.Error);
+            return;
+        }
+        this.incomingQueue.push(data);
     }
 
     onPong(): void {
@@ -188,14 +283,11 @@ export abstract class StreamController<TArgs = unknown, TDataIn = unknown, TData
             if (this.readHp === 0) {
                 this.readResolve(new Err(StreamErr.Timeout));
                 this.readResolve = undefined;
+                this.readHp = undefined;
             }
         }
-        if (!this._weak && this.writeResolve) {
-            const result = this.connection.writeData(this.id, this.outgoingData);
-            if (result.isOk()) {
-                this.writeResolve(new Ok(undefined));
-                this.outgoingData = undefined;
-            }
+        if (!this._weak && this.outgoingQueue.length > 0) {
+            this.flushOutgoing();
         }
         if (!this.weak) {
             this.tic();
@@ -205,15 +297,18 @@ export abstract class StreamController<TArgs = unknown, TDataIn = unknown, TData
     protected tic(): void {}
 
     private destroy(): void {
+        if (this.dead) {
+            return;
+        }
         this.dead = true;
         if (this.readResolve) {
             this.readResolve(new Err(StreamErr.Dead));
             this.readResolve = undefined;
+            this.readHp = undefined;
         }
-        if (this.writeResolve) {
-            this.writeResolve(new Err(StreamErr.Dead));
-            this.writeResolve = undefined;
-            this.outgoingData = undefined;
+        while (this.outgoingQueue.length > 0) {
+            const item = this.outgoingQueue.shift()!;
+            item.resolve(new Err(StreamErr.Dead));
         }
         this.connection.removeStream(this.id);
         this.onDestroy();
@@ -230,8 +325,8 @@ export class IncomingStreamController<TArgs = unknown, TDataIn = unknown, TDataO
     protected hp: number = 10;
     protected weak: boolean = false;
 
-    constructor(connection: Connection, message: NewStreamType) {
-        super(connection);
+    constructor(connection: Connection, message: NewStreamType, incomingQueueCap: number = 256, outgoingQueueCap: number = 256) {
+        super(connection, incomingQueueCap, outgoingQueueCap);
         this.message = message;
     }
 
@@ -253,8 +348,8 @@ export class OutgoingStreamController<TArgs = unknown, TDataIn = unknown, TDataO
     private initResolve?: (val: Result<Stream<TArgs, TDataIn, TDataOut>, InitStreamErr>) => void;
     private initSend: boolean = false;
 
-    constructor(connection: Connection, name: string, args: TArgs) {
-        super(connection);
+    constructor(connection: Connection, name: string, args: TArgs, incomingQueueCap: number = 256, outgoingQueueCap: number = 256) {
+        super(connection, incomingQueueCap, outgoingQueueCap);
         this.name = name;
         this.args = args;
     }

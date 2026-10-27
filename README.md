@@ -28,7 +28,7 @@ Instead of maintaining multiple raw WebSocket connections or writing complex man
 
 ## 🌟 Key Features
 
-- ⚡ **Multiplexed Bidirectional Streams**: Run hundreds of independent data streams over a single physical WebSocket connection with isolated lifecycles, flow control, and arguments.
+- ⚡ **Multiplexed Bidirectional Streams**: Run hundreds of independent data streams over a single physical WebSocket connection with isolated lifecycles, bounded message queues, and arguments.
 - 🛡️ **Zero-Exception Result Monad**: Functional `Result<T, E>`, `Ok`, `Err`, `deal()`, and `wrap()` abstractions prevent unhandled promise rejections and force explicit error handling.
 - 🌐 **Truly Isomorphic / Universal**: Single codebase operating identically in the browser (native `WebSocket`) and Node.js (`ws` / `websocket`).
 - 📦 **Typed Protocol Envelopes**: Built-in runtime-validated message types (`NewStream`, `AcceptStream`, `DataStream`, `CloseStream`, `PingStream`, `PongStream`) validated via `io-ts`.
@@ -147,6 +147,25 @@ const [promise, resolve] = deal<string>();
 setTimeout(() => resolve(new Ok('Completed!')), 100);
 const result = await promise;
 ```
+
+---
+
+### 4. Stream Queueing and Buffering Semantics
+
+Each stream manages its message lifecycle through bounded FIFO queues with strict delivery and failure guarantees:
+
+- **Bounded Message Queues**:
+  Each stream maintains independent bounded FIFO queues for incoming data (`incomingQueue`) and pending writes (`outgoingQueue`). The default capacity is **256 messages** and is configurable per stream via `stream.incomingQueueCap` and `stream.outgoingQueueCap`.
+- **FIFO Message Delivery**:
+  Multiple messages arriving before `stream.read()` are preserved in FIFO order without data loss or silent overwrites. Payloads of any valid type (including `undefined`) are delivered correctly.
+- **Graceful Close Drainage**:
+  When a remote peer closes a stream (`close_stream`), all previously received messages buffered in the incoming queue are drained and returned by `stream.read()` before the stream yields `StreamErr.Dead`.
+- **Overflow Protection**:
+  If either the incoming or outgoing queue exceeds its configured capacity, the stream terminates immediately with `StreamCloseCodes.Error` rather than silently dropping data or leaking memory.
+- **Pending Writes on Disconnect**:
+  Calls to `stream.write()` while disconnected or while the connection is not yet ready are queued in FIFO order up to `outgoingQueueCap` and automatically flushed when the connection is restored, preventing spurious `StreamErr.Concurrent` errors.
+- **Flow Control & Backpressure Note**:
+  The protocol does not provide dynamic network-level flow control (such as credit-based or sliding-window backpressure) across physical hops; `stream.write()` resolves as soon as the payload is dispatched or accepted into the local buffer. Producer/consumer mismatches exceeding the bounded queue capacity are treated as errors and fail fast via `StreamCloseCodes.Error`.
 
 ---
 
