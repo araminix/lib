@@ -1,6 +1,6 @@
 {
     "name": "@araminix/lib",
-    "version": "1.2.0",
+    "version": "1.3.0",
     "description": "Universal, type-safe multiplexed WebSocket streaming and functional communication protocol",
     "type": "module",
     "main": "./dist/index.js",
@@ -46,8 +46,8 @@
         "prepublishOnly": "pnpm run build && pnpm test",
         "format": "prettier --write .",
         "format:check": "prettier --check .",
-        "test": "node --test dist/tests/result.test.js dist/tests/utils.test.js dist/tests/messages.test.js dist/tests/logger.test.js dist/tests/stream.test.js dist/tests/socket.test.js dist/tests/client.test.js",
-        "test:coverage": "node --experimental-test-coverage --test dist/tests/result.test.js dist/tests/utils.test.js dist/tests/messages.test.js dist/tests/logger.test.js dist/tests/stream.test.js dist/tests/socket.test.js dist/tests/client.test.js"
+        "test": "node --test 'dist/tests/**/*.test.js'",
+        "test:coverage": "node --experimental-test-coverage --test 'dist/tests/**/*.test.js'"
     },
     "dependencies": {
         "axios": "1.20.0",

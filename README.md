@@ -24,6 +24,21 @@ Instead of maintaining multiple raw WebSocket connections or writing complex man
 > [!NOTE]
 > The `/ws-token/<token>/...` path-based WebSocket routes are **deprecated** and maintained on the server solely for backward compatibility with legacy clients.
 
+### 5. Resilient Connection Lifecycle & Reconnect Storm Protection
+
+`Client` protects backend services against thundering herds when servers restart or network drops occur:
+
+- **Exponential Backoff with Jitter:**
+  Reconnection delays follow `min(30s, 500ms * 2^n) * (0.5..1.5)`. The jitter uniformly scatters client reconnection attempts across time, preventing thundering herd reconnect storms.
+- **Stateful Backoff Reset:**
+  The backoff counter automatically resets back to `n = 0` whenever the underlying WebSocket emits `onopen` or when the endpoint handshake is accepted (`accept_endpoint`).
+- **Configurable Connection Timeout (`connectTimeout`):**
+  Set `connectTimeout: 5000` (in milliseconds) on `ClientOptions`. If initial connection establishment exceeds this duration, the connect promise settles immediately with `Err(ConnectFail.Unexpected)` instead of hanging indefinitely.
+- **Configurable Retry Limit (`maxReconnectAttempts`):**
+  Optionally restrict retry attempts by specifying `maxReconnectAttempts` on `ClientOptions`. When exceeded, reconnecting terminates and the connection is cleanly destroyed.
+- **Settle Guarantee:**
+  `onDestroy` resolves pending `connect()` promises with `Err(ConnectFail.Unexpected)`, preventing unhandled hanging promises when connections are aborted or unreachable.
+
 ---
 
 ## 🌟 Key Features

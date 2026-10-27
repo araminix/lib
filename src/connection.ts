@@ -213,6 +213,7 @@ export class Connection {
             if (this.ws === ws) {
                 this.hp = this.inter.hp ?? DEFAULT_HP;
                 this.roll();
+                this.inter.onOpen?.();
             }
         };
         ws.onerror = (event: any) => {
@@ -424,6 +425,7 @@ export interface ConnectionInterface {
     onDestroy: () => void;
     onDisconnect: (code: number) => void;
     onAccept: () => void;
+    onOpen?: () => void;
 }
 
 export enum WsCloseCodes {

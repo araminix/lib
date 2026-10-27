@@ -22,6 +22,8 @@ export interface ClientOptions {
     wsHost: string;
     mount?: string;
     token?: string;
+    connectTimeout?: number;
+    maxReconnectAttempts?: number;
 }
 
 export enum ConnectFail {
@@ -113,13 +115,17 @@ export class Client {
     private readonly host: string;
     private readonly wsHost: string;
     private readonly hp?: number;
+    private readonly connectTimeout?: number;
+    private readonly maxReconnectAttempts?: number;
 
-    constructor({ host, wsHost, mount, token, hp }: ClientOptions) {
+    constructor({ host, wsHost, mount, token, hp, connectTimeout, maxReconnectAttempts }: ClientOptions) {
         this.mount = mount ? `/${trimSlash(mount)}` : '';
         this.token = token;
         this.host = host;
         this.wsHost = wsHost;
         this.hp = hp;
+        this.connectTimeout = connectTimeout;
+        this.maxReconnectAttempts = maxReconnectAttempts;
     }
 
     async auth<TAuthData = unknown, TAuthResponse = unknown, TErr = unknown>(data: TAuthData): Promise<Result<AxiosResponse<TAuthResponse>, TErr>> {
@@ -209,6 +215,9 @@ export class Client {
     }
 
     private reconnect(url: string, connection: Connection): void {
+        if (connection.dead) {
+            return;
+        }
         const headers = this.token ? { 'x-token': this.token } : undefined;
         const ws = headers ? new (WS as any).w3cwebsocket(url, undefined, undefined, headers) : new (WS as any).w3cwebsocket(url);
         connection.connect(ws, false);
@@ -227,49 +236,95 @@ export class Client {
         const url = `${this.wsHost}${this.mount}/ws/${name}${pathArg}`;
         let connection!: Connection;
         const [promise, resolve] = deal<Result<Socket, ConnectFail>>();
+        let reconnectAttempts = 0;
+        let reconnectTimer: NodeJS.Timeout | undefined;
+        let connectTimer: NodeJS.Timeout | undefined;
+
+        const clearTimers = () => {
+            if (connectTimer) {
+                clearTimeout(connectTimer);
+                connectTimer = undefined;
+            }
+            if (reconnectTimer) {
+                clearTimeout(reconnectTimer);
+                reconnectTimer = undefined;
+            }
+        };
+
         const inter = {
             hp: this.hp,
-            onDestroy: function () {},
+            onDestroy: () => {
+                clearTimers();
+                resolve(new Err(ConnectFail.Unexpected));
+            },
+            onOpen: () => {
+                reconnectAttempts = 0;
+            },
             onDisconnect: (code: number) => {
                 switch (code) {
                     case WsCloseCodes.ConcurrentConnection: {
+                        clearTimers();
                         resolve(new Err(ConnectFail.Unexpected));
                         connection.destroy(CloseCodes.Concurrent);
                         break;
                     }
                     case WsCloseCodes.Denied: {
+                        clearTimers();
                         resolve(new Err(ConnectFail.Denied));
                         connection.destroy(CloseCodes.Unauthorized);
                         break;
                     }
                     case WsCloseCodes.Normal: {
+                        clearTimers();
                         resolve(new Err(ConnectFail.Unexpected));
                         connection.destroy(CloseCodes.Intentional);
                         break;
                     }
                     case WsCloseCodes.Unauthorized: {
+                        clearTimers();
                         resolve(new Err(ConnectFail.Unauthorized));
                         connection.destroy(CloseCodes.Unauthorized);
                         break;
                     }
                     case WsCloseCodes.NotFound: {
+                        clearTimers();
                         resolve(new Err(ConnectFail.NotFound));
                         connection.destroy(CloseCodes.Unexpected);
                         break;
                     }
                     default: {
-                        setTimeout(() => {
+                        if (this.maxReconnectAttempts !== undefined && reconnectAttempts >= this.maxReconnectAttempts) {
+                            clearTimers();
+                            resolve(new Err(ConnectFail.Unexpected));
+                            connection.destroy(CloseCodes.Unexpected);
+                            break;
+                        }
+                        const baseDelay = Math.min(30000, 500 * Math.pow(2, Math.min(reconnectAttempts, 20)));
+                        const jitter = 0.5 + Math.random();
+                        const delay = Math.round(baseDelay * jitter);
+                        reconnectAttempts++;
+                        reconnectTimer = setTimeout(() => {
+                            reconnectTimer = undefined;
                             this.reconnect(url, connection);
-                        }, 500);
+                        }, delay);
                         break;
                     }
                 }
             },
             onAccept: () => {
+                clearTimers();
+                reconnectAttempts = 0;
                 resolve(new Ok(new Socket(connection)));
             },
         };
         connection = new Connection(inter, arg ?? '');
+        if (this.connectTimeout !== undefined && this.connectTimeout >= 0) {
+            connectTimer = setTimeout(() => {
+                connectTimer = undefined;
+                resolve(new Err(ConnectFail.Unexpected));
+                connection.destroy(CloseCodes.Unexpected);
+            }, this.connectTimeout);
+        }
         this.reconnect(url, connection);
         return promise;
     }
