@@ -5,7 +5,7 @@
 [![npm version](https://img.shields.io/badge/version-1.0.0-blue.svg)](https://www.npmjs.com/package/@araminix/lib)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![TypeScript](https://img.shields.io/badge/TypeScript-7.0-blue.svg)](https://www.typescriptlang.org/)
-[![Node.js](https://img.shields.io/badge/Node.js-%3E%3D20.0.0-green.svg)](https://nodejs.org/)
+[![Node.js](https://img.shields.io/badge/Node.js-%3E%3D22.0.0-green.svg)](https://nodejs.org/)
 
 **Araminix Lib** (`@araminix/lib`) provides the foundational communication layer for modern real-time applications. Designed to be completely **isomorphic**, it runs seamlessly across **Node.js**, **Web Browsers**, **Web Workers**, and modern frontend frameworks (React, Vue, Svelte, Angular).
 
@@ -45,7 +45,7 @@ Instead of maintaining multiple raw WebSocket connections or writing complex man
 
 - ⚡ **Multiplexed Bidirectional Streams**: Run hundreds of independent data streams over a single physical WebSocket connection with isolated lifecycles, bounded message queues, and arguments.
 - 🛡️ **Zero-Exception Result Monad**: Functional `Result<T, E>`, `Ok`, `Err`, `deal()`, and `wrap()` abstractions prevent unhandled promise rejections and force explicit error handling.
-- 🌐 **Truly Isomorphic / Universal**: Single codebase operating identically in the browser (native `WebSocket`) and Node.js (`ws` / `websocket`).
+- 🌐 **Truly Isomorphic / Universal**: Single codebase operating identically in the browser and Node.js >= 22, both through the native `WebSocket` (no extra WebSocket dependency).
 - 📦 **Typed Protocol Envelopes**: Built-in runtime-validated message types (`NewStream`, `AcceptStream`, `DataStream`, `CloseStream`, `PingStream`, `PongStream`) validated via `io-ts`.
 - 🔍 **Structured Logger**: Configurable, timestamped, colored logging utility supporting dynamic levels (`TRACE`, `DEBUG`, `INFO`, `WARN`, `ERROR`).
 - 🚀 **Zero Overhead**: Minimal dependencies, pure ESM, fully tree-shakeable, and bundled with complete TypeScript `.d.ts` declaration maps.

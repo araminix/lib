@@ -41,6 +41,35 @@ describe('Client attachment and file APIs', () => {
         }
     });
 
+    it('opens sockets through the native WebSocket, passing x-token headers in Node', async () => {
+        const originalWebSocket = (globalThis as any).WebSocket;
+        const opened: Array<{ url: string; init: any }> = [];
+        (globalThis as any).WebSocket = function (url: string, init?: unknown) {
+            opened.push({ url, init });
+            return { readyState: 0, send: () => {}, close: () => {}, onopen: null, onerror: null, onclose: null, onmessage: null };
+        };
+        try {
+            const agent = new Client({ host: 'http://127.0.0.1:3000', wsHost: 'ws://127.0.0.1:3000', token: 'agent-token', connectTimeout: 5 });
+            const res = await agent.connect('agent');
+            assert.ok(res.isErr(), 'nothing accepts the mock socket, so the connect timeout fires');
+            assert.deepStrictEqual(opened, [{ url: 'ws://127.0.0.1:3000/ws/agent', init: { headers: { 'x-token': 'agent-token' } } }]);
+        } finally {
+            (globalThis as any).WebSocket = originalWebSocket;
+        }
+    });
+
+    it('resolves connect() with an error when no WebSocket implementation exists', async () => {
+        const originalWebSocket = (globalThis as any).WebSocket;
+        (globalThis as any).WebSocket = undefined;
+        try {
+            const res = await client.connect('platform');
+            assert.ok(res.isErr());
+            assert.strictEqual(res.e, 'Unexpected');
+        } finally {
+            (globalThis as any).WebSocket = originalWebSocket;
+        }
+    });
+
     it('encodes the file name in file links', () => {
         const link = client.getFileLink({ id: 'f-1', name: 'my report #2?.pdf', size: 1, mimetype: 'application/pdf', userId: 'u1' });
         assert.strictEqual(link, 'http://127.0.0.1:3000/api/file/f-1/my%20report%20%232%3F.pdf');

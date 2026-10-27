@@ -1,14 +1,25 @@
 import axios, { AxiosResponse } from 'axios';
-import WS from 'websocket';
 
-import { CloseCodes, Connection, WsCloseCodes } from './connection.js';
+import { CloseCodes, Connection, MinimalWebSocket, WsCloseCodes } from './connection.js';
 import { Socket, SocketErr } from './Socket.js';
-import { err, ok, once, R, trimSlash, wrap } from './utils/index.js';
+import { err, logger, ok, once, R, trimSlash, wrap } from './utils/index.js';
 import { deal, Err, Ok, Result } from './utils/result.js';
 
 export const axiosService = axios;
 
 const RECONNECT_STABLE_MS = 5000; // a reopened socket must stay up this long before the backoff resets
+
+type WebSocketConstructor = new (url: string, init?: { headers: Record<string, string> }) => MinimalWebSocket;
+
+function createWebSocket(url: string, headers: Record<string, string> | undefined): MinimalWebSocket {
+    const NativeWebSocket = (globalThis as { WebSocket?: WebSocketConstructor }).WebSocket;
+    if (!NativeWebSocket) {
+        throw new Error('No global WebSocket available: @araminix/lib needs a browser or Node.js >= 22');
+    }
+    // Node's built-in WebSocket accepts { headers }; browsers cannot send custom headers and rely on the session cookie.
+    const isNode = typeof process !== 'undefined' && Boolean(process.versions?.node);
+    return headers && isNode ? new NativeWebSocket(url, { headers }) : new NativeWebSocket(url);
+}
 
 export interface FileInfo {
     name: string;
@@ -230,7 +241,14 @@ export class Client {
             return;
         }
         const headers = this.token ? { 'x-token': this.token } : undefined;
-        const ws = headers ? new (WS as any).w3cwebsocket(url, undefined, undefined, headers) : new (WS as any).w3cwebsocket(url);
+        let ws: MinimalWebSocket;
+        try {
+            ws = createWebSocket(url, headers);
+        } catch (error) {
+            logger.error('Client - cannot open WebSocket:', error);
+            connection.destroy(CloseCodes.Unexpected);
+            return;
+        }
         connection.connect(ws, false);
     }
 

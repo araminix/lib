@@ -1,28 +1,21 @@
 import axios from 'axios';
 import assert from 'node:assert';
 import { afterEach, beforeEach, describe, it } from 'node:test';
-import WS from 'websocket';
 
 import { Client, ConnectFail } from '../src/client.js';
 import { WsCloseCodes } from '../src/connection.js';
 
 describe('Client Session Security and Headers', () => {
     let capturedUrl: string | undefined;
-    let capturedProtocols: any;
-    let capturedOrigin: any;
     let capturedHeaders: Record<string, string> | undefined;
-    const originalW3C = (WS as any).w3cwebsocket;
+    const originalWebSocket = (globalThis as any).WebSocket;
 
     beforeEach(() => {
         capturedUrl = undefined;
-        capturedProtocols = undefined;
-        capturedOrigin = undefined;
         capturedHeaders = undefined;
-        (WS as any).w3cwebsocket = function (url: string, protocols: any, origin: any, headers: any) {
+        (globalThis as any).WebSocket = function (url: string, init?: { headers?: Record<string, string> }) {
             capturedUrl = url;
-            capturedProtocols = protocols;
-            capturedOrigin = origin;
-            capturedHeaders = headers;
+            capturedHeaders = init?.headers;
             return {
                 readyState: 0,
                 send: () => {},
@@ -36,7 +29,7 @@ describe('Client Session Security and Headers', () => {
     });
 
     afterEach(() => {
-        (WS as any).w3cwebsocket = originalW3C;
+        (globalThis as any).WebSocket = originalWebSocket;
     });
 
     it('connects to /ws/:endpoint with no headers when token is omitted (browser mode)', async () => {
@@ -156,15 +149,15 @@ describe('Client Session Security and Headers', () => {
 });
 
 describe('Client Connection Lifecycle, Timeouts, and Backoff', () => {
-    const originalW3C = (WS as any).w3cwebsocket;
+    const originalWebSocket = (globalThis as any).WebSocket;
 
     afterEach(() => {
-        (WS as any).w3cwebsocket = originalW3C;
+        (globalThis as any).WebSocket = originalWebSocket;
     });
 
     it('resolves connect() with ConnectFail.Unexpected when connection is destroyed before accept', async () => {
         let mockWs: any;
-        (WS as any).w3cwebsocket = function () {
+        (globalThis as any).WebSocket = function () {
             mockWs = {
                 readyState: 0,
                 send: () => {},
@@ -192,7 +185,7 @@ describe('Client Connection Lifecycle, Timeouts, and Backoff', () => {
     });
 
     it('aborts connection attempt and resolves with ConnectFail.Unexpected when connectTimeout expires', async () => {
-        (WS as any).w3cwebsocket = function () {
+        (globalThis as any).WebSocket = function () {
             return {
                 readyState: 0,
                 send: () => {},
@@ -223,7 +216,7 @@ describe('Client Connection Lifecycle, Timeouts, and Backoff', () => {
 
     it('clears connectTimeout when connection is accepted', async () => {
         let mockWs: any;
-        (WS as any).w3cwebsocket = function () {
+        (globalThis as any).WebSocket = function () {
             mockWs = {
                 readyState: 1,
                 send: () => {},
@@ -262,7 +255,7 @@ describe('Client Connection Lifecycle, Timeouts, and Backoff', () => {
         const originalRandom = Math.random;
 
         let currentWs: any;
-        (WS as any).w3cwebsocket = function () {
+        (globalThis as any).WebSocket = function () {
             currentWs = {
                 readyState: 0,
                 send: () => {},
@@ -361,7 +354,7 @@ describe('Client Connection Lifecycle, Timeouts, and Backoff', () => {
         const originalRandom = Math.random;
 
         let currentWs: any;
-        (WS as any).w3cwebsocket = function () {
+        (globalThis as any).WebSocket = function () {
             currentWs = {
                 readyState: 1,
                 send: () => {},
@@ -420,7 +413,7 @@ describe('Client Connection Lifecycle, Timeouts, and Backoff', () => {
         const originalRandom = Math.random;
 
         let currentWs: any;
-        (WS as any).w3cwebsocket = function () {
+        (globalThis as any).WebSocket = function () {
             currentWs = {
                 readyState: 1,
                 send: () => {},
@@ -479,7 +472,7 @@ describe('Client Connection Lifecycle, Timeouts, and Backoff', () => {
         const originalRandom = Math.random;
 
         let currentWs: any;
-        (WS as any).w3cwebsocket = function () {
+        (globalThis as any).WebSocket = function () {
             currentWs = {
                 readyState: 1,
                 send: () => {},
@@ -543,7 +536,7 @@ describe('Client Connection Lifecycle, Timeouts, and Backoff', () => {
         let currentWs: any;
         let reconnectCount = 0;
 
-        (WS as any).w3cwebsocket = function () {
+        (globalThis as any).WebSocket = function () {
             reconnectCount++;
             currentWs = {
                 readyState: 0,
@@ -608,7 +601,7 @@ describe('Client Connection Lifecycle, Timeouts, and Backoff', () => {
         let timeoutScheduled = false;
         const originalSetTimeout = globalThis.setTimeout;
 
-        (WS as any).w3cwebsocket = function () {
+        (globalThis as any).WebSocket = function () {
             currentWs = {
                 readyState: 0,
                 send: () => {},
@@ -648,7 +641,7 @@ describe('Client Connection Lifecycle, Timeouts, and Backoff', () => {
     });
 
     it('connectAgent propagates ConnectFail.Unexpected on timeout', async () => {
-        (WS as any).w3cwebsocket = function () {
+        (globalThis as any).WebSocket = function () {
             return {
                 readyState: 0,
                 send: () => {},
