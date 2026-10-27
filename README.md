@@ -2,7 +2,7 @@
 
 > **Universal, type-safe multiplexed WebSocket streaming and functional communication protocol.**
 
-[![npm version](https://img.shields.io/badge/npm-3.1.0-blue.svg)](https://www.npmjs.com/package/@araminix/lib)
+[![npm version](https://img.shields.io/badge/npm-3.1.1-blue.svg)](https://www.npmjs.com/package/@araminix/lib)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-7-blue.svg)](https://www.typescriptlang.org/)
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D22-green.svg)](https://nodejs.org/)
@@ -939,10 +939,10 @@ outgoingStream<TArgs, TDataIn, TDataOut>(name: string, args?: TArgs): Promise<Re
 
 Sends `new_stream` with `args` and resolves when the peer accepts. If the socket cannot send yet (for example during a reconnect) the request is retried on every tick. The peer must accept within 20 ticks and acquire the name before its own `streamRequestHp` runs out.
 
-| Parameter | Type     | Default     | Description                                                         |
-| --------- | -------- | ----------- | ------------------------------------------------------------------- |
-| `name`    | `string` | required    | Stream name; the peer accepts it with `incomingStream(name)`.       |
-| `args`    | `TArgs`  | `undefined` | JSON-serialisable arguments, delivered as [`Stream.args`](#stream). |
+| Parameter | Type     | Default     | Description                                                                                                      |
+| --------- | -------- | ----------- | ---------------------------------------------------------------------------------------------------------------- |
+| `name`    | `string` | required    | Stream name; the peer accepts it with `incomingStream(name)`.                                                    |
+| `args`    | `TArgs`  | `undefined` | JSON-serialisable arguments, delivered as [`Stream.args`](#stream). `undefined` is sent as `null` (since 3.1.1). |
 
 **Returns** `Ok(stream)` once accepted, or `Err(InitStreamErr.Dead)` when the connection is dead or the stream was rejected, closed or not accepted in time. Never rejects.
 
@@ -1980,6 +1980,10 @@ Errors of [`AgentClient.post()`](#agentclientpost), discriminated by [`AgentClie
 | [`ExecutionClientAgentError`](#executionclientagenterror)         | `'Execution'`     | The `e` of the server's `{ ok: false, e }` reply.                                                                 |
 
 ## Migration notes
+
+### Upgrading to 3.1.1
+
+No breaking changes. Streams opened without arguments (or with `undefined`) now send `null`, so the peer accepts them; before, the request failed validation on the peer and the stream never opened. The receiving side sees `null` as `Stream.args`.
 
 ### Upgrading to 3.1.0
 

@@ -271,7 +271,7 @@ export class Connection {
      * @typeParam TArgs - Type of `args`.
      * @param streamId - Id of the new stream.
      * @param name - Stream name.
-     * @param args - JSON-serialisable stream arguments.
+     * @param args - JSON-serialisable stream arguments. `undefined` is sent as `null`.
      * @returns `ok()` if the frame was handed to the socket, `err()` otherwise (see {@link Connection.writeData}).
      */
     writeNewStream<TArgs = unknown>(streamId: string, name: string, args: TArgs): R {
@@ -279,7 +279,8 @@ export class Connection {
             type: 'new_stream',
             id: streamId,
             name,
-            args,
+            // JSON.stringify drops undefined properties, and a new_stream frame without `args` fails validation on the peer.
+            args: args === undefined ? null : args,
         };
         return this.write(message);
     }

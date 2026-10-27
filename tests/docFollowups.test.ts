@@ -52,6 +52,35 @@ describe('Stream writes that cannot be serialised', () => {
     });
 });
 
+describe('Streams opened without arguments', () => {
+    it('are sent with args null and accepted by the receiving connection', async () => {
+        const sender = makeConnection();
+        const receiver = makeConnection();
+        const senderWs = makeWs();
+        const receiverWs = makeWs();
+        sender.connect(senderWs.ws);
+        receiver.connect(receiverWs.ws);
+
+        const opening = sender.newOutgoingStream('reports', undefined);
+        const frame = senderWs.sent.find((message) => message.type === 'new_stream');
+        assert.ok(frame);
+        assert.ok('args' in frame && frame.args === null, 'undefined args are sent as null');
+
+        const acquiring = receiver.acquireStream('reports');
+        receiverWs.ws.onmessage({ data: JSON.stringify(frame) });
+        const incoming = await acquiring;
+        assert.ok(incoming.isOk(), 'the receiver accepts the request');
+        assert.strictEqual(incoming.unwrap().args, null);
+
+        const accept = receiverWs.sent.find((message) => message.type === 'accept_stream');
+        senderWs.ws.onmessage({ data: JSON.stringify(accept) });
+        assert.ok((await opening).isOk());
+
+        sender.destroy(CloseCodes.Intentional);
+        receiver.destroy(CloseCodes.Intentional);
+    });
+});
+
 describe('Close codes', () => {
     it('reports unknown close_stream codes as Error so waitClose() resolves', async () => {
         const conn = makeConnection();
