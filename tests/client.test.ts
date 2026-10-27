@@ -155,7 +155,7 @@ describe('Client Connection Lifecycle, Timeouts, and Backoff', () => {
         (globalThis as any).WebSocket = originalWebSocket;
     });
 
-    it('resolves connect() with ConnectFail.Unexpected when connection is destroyed before accept', async () => {
+    it('resolves connect() with ConnectFail.Concurrent when another connection takes over (4409)', async () => {
         let mockWs: any;
         (globalThis as any).WebSocket = function () {
             mockWs = {
@@ -180,7 +180,7 @@ describe('Client Connection Lifecycle, Timeouts, and Backoff', () => {
         const res = await connectPromise;
         assert.ok(res.isErr());
         if (res.isErr()) {
-            assert.strictEqual(res.e, ConnectFail.Unexpected);
+            assert.strictEqual(res.e, ConnectFail.Concurrent);
         }
     });
 

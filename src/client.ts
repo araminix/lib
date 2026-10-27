@@ -44,6 +44,7 @@ export enum ConnectFail {
     Unauthorized = 'Unauthorized',
     NotFound = 'NotFound',
     Denied = 'Denied',
+    Concurrent = 'Concurrent',
 }
 
 export enum AgentClientErrorType {
@@ -310,7 +311,7 @@ export class Client {
                 switch (code) {
                     case WsCloseCodes.ConcurrentConnection: {
                         clearTimers();
-                        resolve(new Err(ConnectFail.Unexpected));
+                        resolve(new Err(ConnectFail.Concurrent));
                         connection.destroy(CloseCodes.Concurrent);
                         break;
                     }
