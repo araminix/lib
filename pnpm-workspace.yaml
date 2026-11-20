@@ -2,3 +2,6 @@ allowBuilds:
   bufferutil: false
   es5-ext: false
   utf-8-validate: false
+# The import-sorting Prettier plugin's latest release still asks for a minimatch with a known flaw.
+overrides:
+  '@trivago/prettier-plugin-sort-imports>minimatch': ^11.0.1
