@@ -21,6 +21,8 @@ export enum SocketErr {
     Closed = 0,
     /** A newer call for the same stream name replaced this one. Only one caller can wait per name; the newest wins. */
     Concurrent = 1,
+    /** The wait was cancelled via an `AbortSignal` or {@link Socket.cancelIncomingStream}. */
+    Cancelled = 2,
 }
 
 /**
@@ -115,8 +117,10 @@ export class Socket {
      * @typeParam TDataIn - Type of the messages you read.
      * @typeParam TDataOut - Type of the messages you write.
      * @param name - The stream name the peer passes to its `outgoingStream()`.
+     * @param signal - Optional `AbortSignal` to cancel waiting while keeping the socket alive.
      * @returns `Ok(stream)`; `Err(SocketErr.Closed)` if the connection is or becomes dead; `Err(SocketErr.Concurrent)` if a newer
-     * call for the same name replaced this one. Never rejects.
+     * call for the same name replaced this one; `Err(SocketErr.Cancelled)` if aborted via `signal` or
+     * {@link Socket.cancelIncomingStream}. Never rejects.
      *
      * @example
      * ```ts
@@ -131,8 +135,21 @@ export class Socket {
      * });
      * ```
      */
-    async incomingStream<TArgs = unknown, TDataIn = unknown, TDataOut = unknown>(name: string): Promise<Result<Stream<TArgs, TDataIn, TDataOut>, SocketErr>> {
-        return await this.connection.acquireStream<TArgs, TDataIn, TDataOut>(name);
+    async incomingStream<TArgs = unknown, TDataIn = unknown, TDataOut = unknown>(name: string, signal?: AbortSignal): Promise<Result<Stream<TArgs, TDataIn, TDataOut>, SocketErr>> {
+        return await this.connection.acquireStream<TArgs, TDataIn, TDataOut>(name, signal);
+    }
+
+    /**
+     * Cancels a pending {@link Socket.incomingStream} call for `name`, if one is currently waiting.
+     *
+     * Resolves the waiting promise with {@link SocketErr.Cancelled} and cleans up its internal entry and any attached
+     * `AbortSignal` listener.
+     *
+     * @param name - The stream name whose pending wait should be cancelled.
+     * @returns `true` if a waiting call was cancelled; `false` if nobody was waiting for `name`.
+     */
+    cancelIncomingStream(name: string): boolean {
+        return this.connection.cancelAcquireStream(name);
     }
 
     /** The endpoint argument: the `arg` passed to `Client.connect(name, arg)`, or `''`. */

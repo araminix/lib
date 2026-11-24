@@ -185,7 +185,7 @@ export class Connection {
      * @typeParam TDataIn - Type of the messages the peer sends.
      * @typeParam TDataOut - Type of the messages you write.
      * @param name - Stream name; the peer must acquire it with `incomingStream(name)`.
-     * @param args - JSON-serialisable arguments, delivered to the peer as `Stream.args`.
+     * @param args - JSON-serializable arguments, delivered to the peer as `Stream.args`.
      * @returns `Ok(stream)` once accepted, or `Err(InitStreamErr.Dead)` if the connection is dead, the peer closed the request,
      * or it was not accepted within 20 ticks. Never rejects.
      *
@@ -271,7 +271,7 @@ export class Connection {
      * @typeParam TArgs - Type of `args`.
      * @param streamId - Id of the new stream.
      * @param name - Stream name.
-     * @param args - JSON-serialisable stream arguments. `undefined` is sent as `null`.
+     * @param args - JSON-serializable stream arguments. `undefined` is sent as `null`.
      * @returns `ok()` if the frame was handed to the socket, `err()` otherwise (see {@link Connection.writeData}).
      */
     writeNewStream<TArgs = unknown>(streamId: string, name: string, args: TArgs): R {
@@ -288,17 +288,17 @@ export class Connection {
     /**
      * Sends one `data_stream` frame. Low-level: `Stream.write()` adds queueing and heartbeat handling on top of it.
      *
-     * @typeParam T - Payload type; must be JSON-serialisable.
+     * @typeParam T - Payload type; must be JSON-serializable.
      * @param streamId - Target stream id.
      * @param data - The payload. `undefined` is allowed (the `data` key is then omitted on the wire).
-     * @returns `ok()` when the frame was passed to `ws.send()`. `err()` when `data` cannot be serialised with `JSON.stringify`, no
+     * @returns `ok()` when the frame was passed to `ws.send()`. `err()` when `data` cannot be serialized with `JSON.stringify`, no
      * socket is attached, the socket's `readyState` is not 1 (open), or `send()` threw; in the last case the socket is closed
      * (without a code) so that the usual disconnect handling takes over.
      *
      * @example
      * ```ts
      * if (connection.writeData(streamId, { tick: 1 }).isErr()) {
-     *     // not sent: no open socket, or the payload is not serialisable
+     *     // not sent: no open socket, or the payload is not serializable
      * }
      * ```
      */
@@ -365,8 +365,10 @@ export class Connection {
      * @typeParam TDataIn - Type of the messages the peer sends.
      * @typeParam TDataOut - Type of the messages you write.
      * @param name - The stream name to accept.
-     * @returns `Ok(stream)`, `Err(SocketErr.Closed)` if the connection is or becomes dead, or `Err(SocketErr.Concurrent)` if a
-     * newer call for the same name replaced this one. Never rejects.
+     * @param signal - Optional `AbortSignal` to cancel waiting while keeping the connection alive.
+     * @returns `Ok(stream)`, `Err(SocketErr.Closed)` if the connection is or becomes dead, `Err(SocketErr.Concurrent)` if a
+     * newer call for the same name replaced this one, or `Err(SocketErr.Cancelled)` if aborted via `signal` or
+     * {@link Connection.cancelAcquireStream}. Never rejects.
      *
      * @example
      * ```ts
@@ -374,7 +376,10 @@ export class Connection {
      * if (incoming.isOk()) console.log('peer joined', incoming.unwrap().args.room);
      * ```
      */
-    acquireStream<TArgs = unknown, TDataIn = unknown, TDataOut = unknown>(name: string): Promise<Result<Stream<TArgs, TDataIn, TDataOut>, SocketErr>> {
+    acquireStream<TArgs = unknown, TDataIn = unknown, TDataOut = unknown>(name: string, signal?: AbortSignal): Promise<Result<Stream<TArgs, TDataIn, TDataOut>, SocketErr>> {
+        if (signal?.aborted) {
+            return Promise.resolve(new Err(SocketErr.Cancelled));
+        }
         const [promise, resolve] = deal<Result<Stream<TArgs, TDataIn, TDataOut>, SocketErr>>();
         if (this.dead) {
             resolve(new Err(SocketErr.Closed));
@@ -384,9 +389,48 @@ export class Connection {
         if (existingPromise) {
             existingPromise(new Err(SocketErr.Concurrent));
         }
-        this.promises.set(name, resolve as (result: Result<Stream<any, any, any>, SocketErr>) => void);
+        let settled = false;
+        const onAbort = () => {
+            if (this.promises.get(name) === settle) {
+                this.promises.delete(name);
+            }
+            settle(new Err(SocketErr.Cancelled));
+        };
+        const settle = (result: Result<Stream<any, any, any>, SocketErr>) => {
+            if (settled) return;
+            settled = true;
+            signal?.removeEventListener('abort', onAbort);
+            resolve(result as Result<Stream<TArgs, TDataIn, TDataOut>, SocketErr>);
+        };
+        this.promises.set(name, settle);
         this.roll();
+        if (!settled && signal) {
+            if (signal.aborted) {
+                onAbort();
+            } else {
+                signal.addEventListener('abort', onAbort, { once: true });
+            }
+        }
         return promise;
+    }
+
+    /**
+     * Cancels a pending {@link Connection.acquireStream} call for `name`, if one is currently waiting.
+     *
+     * Deletes the waiting resolver from the pending map, cleans up any attached `AbortSignal` listener, and resolves the
+     * waiting promise with {@link SocketErr.Cancelled}.
+     *
+     * @param name - The stream name whose pending wait should be cancelled.
+     * @returns `true` if a waiting call was cancelled; `false` if nobody was waiting for `name`.
+     */
+    cancelAcquireStream(name: string): boolean {
+        const existingPromise = this.promises.get(name);
+        if (!existingPromise) {
+            return false;
+        }
+        this.promises.delete(name);
+        existingPromise(new Err(SocketErr.Cancelled));
+        return true;
     }
 
     /**
@@ -656,7 +700,7 @@ export class Connection {
         return count;
     }
 
-    /** Serialises and sends one frame; see {@link Connection.writeData} for when it fails. */
+    /** Serializes and sends one frame; see {@link Connection.writeData} for when it fails. */
     private write(message: unknown): R {
         let payload: string;
         try {
@@ -851,6 +895,6 @@ export enum CloseCodes {
     Intentional = 'Intentional',
     /** The server reported that another connection took over (4409). */
     Concurrent = 'Concurrent',
-    /** Authentication or authorisation failed: close code 4401 or 4403, or {@link Connection.deny}. */
+    /** Authentication or authorization failed: close code 4401 or 4403, or {@link Connection.deny}. */
     Unauthorized = 'Unauthorized',
 }
