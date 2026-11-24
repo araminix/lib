@@ -141,3 +141,154 @@ describe('Utils fallbacks', () => {
         assert.strictEqual(trimSlash('///'), '');
     });
 });
+
+describe('Connection backpressure (ws.bufferedAmount)', () => {
+    it('returns Err without calling ws.send when ws.bufferedAmount + payload exceeds maxBufferedBytes', () => {
+        const conn = makeConnection({ maxBufferedBytes: 100 });
+        const { ws, sent } = makeWs();
+        ws.bufferedAmount = 80;
+        conn.connect(ws);
+
+        // Frame JSON is > 20 bytes, so 80 + byteLength > 100
+        const res = conn.writeData('stream-1', 'hello world');
+        assert.strictEqual(res.isErr(), true);
+        assert.strictEqual(sent.length, 0);
+        conn.destroy(CloseCodes.Intentional);
+    });
+
+    it('accounts for UTF-8 byte length rather than UTF-16 string length', () => {
+        const payload = '🚀'.repeat(10); // 10 emoji = 40 UTF-8 bytes (20 UTF-16 code units)
+        const frameBytes = Buffer.byteLength(JSON.stringify({ type: 'data_stream', id: 's', data: payload }), 'utf8');
+        const conn = makeConnection({ maxBufferedBytes: frameBytes - 1 });
+        const { ws, sent } = makeWs();
+        ws.bufferedAmount = 0;
+        conn.connect(ws);
+
+        const rejected = conn.writeData('s', payload);
+        assert.strictEqual(rejected.isErr(), true);
+        assert.strictEqual(sent.length, 0);
+
+        const connExact = makeConnection({ maxBufferedBytes: frameBytes });
+        const exactWs = makeWs();
+        exactWs.ws.bufferedAmount = 0;
+        connExact.connect(exactWs.ws);
+
+        const accepted = connExact.writeData('s', payload);
+        assert.strictEqual(accepted.isOk(), true);
+        assert.strictEqual(exactWs.sent.length, 1);
+
+        conn.destroy(CloseCodes.Intentional);
+        connExact.destroy(CloseCodes.Intentional);
+    });
+
+    it('recovers and sends once ws.bufferedAmount drains back below threshold', () => {
+        const conn = makeConnection({ maxBufferedBytes: 100, backpressureHp: 5 });
+        const { ws, sent } = makeWs();
+        let closed = false;
+        ws.close = () => {
+            closed = true;
+        };
+        ws.bufferedAmount = 95;
+        conn.connect(ws);
+
+        assert.strictEqual(conn.writeData('stream-1', 'blocked').isErr(), true);
+        assert.strictEqual(sent.length, 0);
+
+        // Sustained for a few ticks (below backpressureHp)
+        (conn as any).tic();
+        (conn as any).tic();
+        assert.strictEqual(closed, false);
+
+        // Buffer drains back below threshold
+        ws.bufferedAmount = 0;
+        const okRes = conn.writeData('stream-1', 'recovered');
+        assert.strictEqual(okRes.isOk(), true);
+        assert.deepStrictEqual(sent, [{ type: 'data_stream', id: 'stream-1', data: 'recovered' }]);
+
+        // Subsequent ticks do not close the recovered socket
+        for (let i = 0; i < 6; i++) {
+            (conn as any).tic();
+        }
+        assert.strictEqual(closed, false);
+        conn.destroy(CloseCodes.Intentional);
+    });
+
+    it('enforces the 4 MiB default limit and allows disabling backpressure with maxBufferedBytes: 0', () => {
+        const defaultConn = makeConnection();
+        const ws1 = makeWs();
+        ws1.ws.bufferedAmount = 4 * 1024 * 1024;
+        defaultConn.connect(ws1.ws);
+
+        assert.strictEqual(defaultConn.writeData('s1', 'x').isErr(), true);
+        assert.strictEqual(ws1.sent.length, 0);
+        defaultConn.destroy(CloseCodes.Intentional);
+
+        const disabledConn = makeConnection({ maxBufferedBytes: 0 });
+        const ws2 = makeWs();
+        ws2.ws.bufferedAmount = 16 * 1024 * 1024;
+        disabledConn.connect(ws2.ws);
+
+        assert.strictEqual(disabledConn.writeData('s1', 'x').isOk(), true);
+        assert.strictEqual(ws2.sent.length, 1);
+        disabledConn.destroy(CloseCodes.Intentional);
+    });
+
+    it('terminates a stalled socket when backpressure persists past backpressureHp ticks', () => {
+        const conn = makeConnection({ maxBufferedBytes: 100, backpressureHp: 3 });
+        const { ws, sent } = makeWs();
+        let terminated = 0;
+        let closed = 0;
+        ws.bufferedAmount = 150;
+        ws.terminate = () => {
+            terminated++;
+            ws.onclose?.({ code: 1006 });
+        };
+        ws.close = () => {
+            closed++;
+        };
+        conn.connect(ws);
+
+        assert.strictEqual(conn.writeData('s1', 'stall').isErr(), true);
+        assert.strictEqual(sent.length, 0);
+
+        (conn as any).tic();
+        (conn as any).tic();
+        assert.strictEqual(terminated, 0);
+        assert.strictEqual(closed, 0);
+
+        // 3rd tick reaches backpressureHp -> terminates stalled socket
+        (conn as any).tic();
+        assert.strictEqual(terminated, 1);
+        assert.strictEqual(closed, 0);
+        assert.strictEqual(conn.ws, undefined);
+        conn.destroy(CloseCodes.Intentional);
+    });
+
+    it('falls back to ws.close() when ws.terminate is absent and resets counter on pong_stream', () => {
+        const conn = makeConnection({ maxBufferedBytes: 100, backpressureHp: 3 });
+        const { ws } = makeWs();
+        let closeCalls = 0;
+        ws.bufferedAmount = 150;
+        ws.close = () => {
+            closeCalls++;
+            ws.onclose?.({ code: 1006 });
+        };
+        conn.connect(ws);
+
+        assert.strictEqual(conn.writeData('s1', 'stall').isErr(), true);
+        (conn as any).tic();
+        (conn as any).tic();
+        assert.strictEqual(closeCalls, 0);
+
+        // Receiving a pong_stream resets the sustained backpressure counter
+        ws.onmessage({ data: JSON.stringify({ type: 'pong_stream', id: 'unknown-or-live' }) });
+        (conn as any).tic();
+        (conn as any).tic();
+        assert.strictEqual(closeCalls, 0);
+
+        // 3rd consecutive tick after pong closes the stalled socket
+        (conn as any).tic();
+        assert.strictEqual(closeCalls, 1);
+        conn.destroy(CloseCodes.Intentional);
+    });
+});

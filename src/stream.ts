@@ -1,15 +1,18 @@
 import type { Connection } from './connection.js';
 import { NewStreamType } from './messages.js';
 import { uuid } from './utils/index.js';
-import { deal, Err, Ok, Result } from './utils/result.js';
+import { deal, Err, Ok, R, Result } from './utils/result.js';
 
-/** Whether `JSON.stringify` can serialise `data` (it throws for circular structures and BigInt values). */
-function isSerializable(data: unknown): boolean {
+/** Serializes a `data_stream` frame once; returns `undefined` if `JSON.stringify` throws (circular structures, BigInt, etc.). */
+function serializeDataFrame(streamId: string, data: unknown): string | undefined {
     try {
-        JSON.stringify(data);
-        return true;
+        return JSON.stringify({
+            type: 'data_stream',
+            id: streamId,
+            data,
+        });
     } catch {
-        return false;
+        return undefined;
     }
 }
 
@@ -381,8 +384,8 @@ export abstract class StreamController<TArgs = unknown, TDataIn = unknown, TData
     private incomingQueue: unknown[] = [];
     /** Backing field of {@link StreamController.incomingQueueCap}. */
     private _incomingQueueCap: number = 256;
-    /** Writes waiting to be sent (FIFO), each with the resolver of its `write()` promise. */
-    private outgoingQueue: Array<{ data: unknown; resolve: (val: Result<void, StreamErr>) => void }> = [];
+    /** Writes waiting to be sent (FIFO), each with its pre-serialized frame and the resolver of its `write()` promise. */
+    private outgoingQueue: Array<{ payload: string; data?: unknown; resolve: (val: Result<void, StreamErr>) => void }> = [];
     /** Backing field of {@link StreamController.outgoingQueueCap}. */
     private _outgoingQueueCap: number = 256;
     /** `true` once the stream is closed. */
@@ -498,26 +501,34 @@ export abstract class StreamController<TArgs = unknown, TDataIn = unknown, TData
             resolve(new Err(StreamErr.Dead));
             return promise;
         }
+        const payload = serializeDataFrame(this.id, data);
+        if (payload === undefined) {
+            resolve(new Err(StreamErr.Invalid));
+            return promise;
+        }
         if (this.outgoingQueue.length === 0 && !this._weak) {
-            const result = this.connection.writeData(this.id, data);
+            const result = this.sendDataFrame(payload, data);
             if (result.isOk()) {
                 resolve(new Ok(undefined));
                 return promise;
             }
-        }
-        // Checked only on the queueing path: queued data is retried until it is sent, so unserialisable data would block the
-        // queue for good.
-        if (!isSerializable(data)) {
-            resolve(new Err(StreamErr.Invalid));
-            return promise;
         }
         if (this.outgoingQueue.length >= this._outgoingQueueCap) {
             this.close(StreamCloseCodes.Error);
             resolve(new Err(StreamErr.Dead));
             return promise;
         }
-        this.outgoingQueue.push({ data, resolve });
+        const keepRawData = typeof this.connection.writeRaw !== 'function';
+        this.outgoingQueue.push(keepRawData ? { payload, data, resolve } : { payload, resolve });
         return promise;
+    }
+
+    /** Hands a pre-serialized `data_stream` frame to the connection, falling back to `writeData` for minimal test doubles. */
+    private sendDataFrame(payload: string, data: unknown): R {
+        if (typeof this.connection.writeRaw === 'function') {
+            return this.connection.writeRaw(payload);
+        }
+        return this.connection.writeData(this.id, data);
     }
 
     /** Sends queued writes in order until one fails, the stream closes or it turns weak. */
@@ -527,7 +538,7 @@ export abstract class StreamController<TArgs = unknown, TDataIn = unknown, TData
         }
         while (this.outgoingQueue.length > 0) {
             const head = this.outgoingQueue[0];
-            const result = this.connection.writeData(this.id, head.data);
+            const result = this.sendDataFrame(head.payload, head.data);
             if (result.isOk()) {
                 this.outgoingQueue.shift();
                 head.resolve(new Ok(undefined));

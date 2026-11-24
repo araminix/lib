@@ -31,6 +31,16 @@ export interface MinimalWebSocket {
     send(data: string): void;
     /** Starts the closing handshake, optionally with a close code (e.g. one of {@link WsCloseCodes}) and a reason. */
     close(code?: number, reason?: string): void;
+    /**
+     * Optional immediate socket teardown (provided by Node's `ws` package). When present, used to kill sockets stalled under
+     * sustained backpressure without waiting for a closing handshake.
+     */
+    terminate?: () => void;
+    /**
+     * Bytes queued by the WebSocket implementation waiting to be flushed to the network. Optional: when missing, backpressure
+     * checks are skipped.
+     */
+    bufferedAmount?: number;
     /** Open handler; assigned by {@link Connection.connect}. */
     onopen: ((event: any) => void) | null;
     /** Error handler; assigned by {@link Connection.connect}, which only logs errors (a `close` event follows). */
@@ -50,6 +60,21 @@ export interface MinimalWebSocket {
 const DEFAULT_HP = 300; // seconds (60 * 5) 5 minutes
 /** Default {@link ConnectionInterface.streamRequestHp}. */
 const DEFAULT_STREAM_REQUEST_HP = 10; // seconds a new_stream request waits for an acquirer
+/** Default {@link ConnectionInterface.maxBufferedBytes}: 4 MiB. */
+const DEFAULT_MAX_BUFFERED_BYTES = 4 * 1024 * 1024;
+/** Default {@link ConnectionInterface.backpressureHp}: ticks of sustained backpressure before closing a stalled socket. */
+const DEFAULT_BACKPRESSURE_HP = 10;
+
+let fallbackTextEncoder: TextEncoder | undefined;
+
+/** Returns the UTF-8 byte length of `value`, using `Buffer.byteLength` in Node.js with a `TextEncoder` fallback for browsers. */
+function utf8ByteLength(value: string): number {
+    if (typeof Buffer !== 'undefined' && typeof Buffer.byteLength === 'function') {
+        return Buffer.byteLength(value, 'utf8');
+    }
+    fallbackTextEncoder ??= new TextEncoder();
+    return fallbackTextEncoder.encode(value).byteLength;
+}
 
 /** An incoming `new_stream` request waiting for {@link Connection.acquireStream}; it loses 1 hp per tick and is cancelled at 0. */
 class StreamRequest {
@@ -140,6 +165,12 @@ export class Connection {
     private resolveClose: (code: CloseCodes) => void;
     /** `true` once {@link Connection.destroy} ran. A dead connection never comes back. */
     dead: boolean = false;
+    /** `true` once a write was dropped due to backpressure since the last successful send, pong, drain, or socket attach. */
+    private backpressureActive: boolean = false;
+    /** Consecutive 1-second ticks during which the attached socket remained backpressured. */
+    private backpressureTicks: number = 0;
+    /** Smallest frame byte length rejected during the current backpressure episode, used to detect when the buffer drains. */
+    private lastBlockedPayloadBytes: number = 0;
     /** The 1-second tick timer; unref'd, and cleared on destroy. */
     private timer: NodeJS.Timeout = setInterval(() => {
         this.tic();
@@ -496,6 +527,7 @@ export class Connection {
         if (reset) {
             this.hp = this.inter.hp ?? DEFAULT_HP;
         }
+        this.resetBackpressure();
         const oldWs = this.ws;
         Object.defineProperty(this, 'ws', {
             value: ws,
@@ -509,6 +541,7 @@ export class Connection {
         ws.onopen = () => {
             if (this.ws === ws) {
                 this.hp = this.inter.hp ?? DEFAULT_HP;
+                this.resetBackpressure();
                 this.roll();
                 this.inter.onOpen?.();
             }
@@ -518,6 +551,7 @@ export class Connection {
         };
         ws.onclose = (event: { code: number }) => {
             if (this.ws === ws) {
+                this.resetBackpressure();
                 Object.defineProperty(this, 'ws', {
                     value: undefined,
                     writable: true,
@@ -582,8 +616,8 @@ export class Connection {
     }
 
     /**
-     * Runs once per second: drains hp while no socket is attached (destroying the connection with `Died` when it reaches 0), then
-     * ticks the queued stream requests and the live streams.
+     * Runs once per second: drains hp while no socket is attached (destroying the connection with `Died` when it reaches 0),
+     * checks for sustained WebSocket backpressure, then ticks the queued stream requests and the live streams.
      */
     private tic(): void {
         if (!this.ws) {
@@ -593,6 +627,7 @@ export class Connection {
             this.destroy(CloseCodes.Died);
             return;
         }
+        this.checkBackpressure();
         this.streamQueue.forEach((streams) => {
             streams.forEach((stream) => stream.damage());
         });
@@ -613,6 +648,7 @@ export class Connection {
 
     /** Handles `pong_stream` for a live stream, or answers `close_stream` NotFound for unknown ids. */
     private onPongStream(data: { id: string }): void {
+        this.resetBackpressure();
         const stream = this.streams.get(data.id);
         if (!stream) {
             this.writeClose(data.id, StreamCloseCode.NotFound);
@@ -700,21 +736,33 @@ export class Connection {
         return count;
     }
 
-    /** Serializes and sends one frame; see {@link Connection.writeData} for when it fails. */
-    private write(message: unknown): R {
-        let payload: string;
-        try {
-            payload = JSON.stringify(message);
-        } catch {
-            return err();
-        }
+    /**
+     * Sends a pre-serialized JSON frame string over the attached WebSocket.
+     *
+     * Used internally by stream controllers so queued messages are serialized only once. Checks socket readiness and
+     * {@link ConnectionInterface.maxBufferedBytes} backpressure before calling `ws.send()`.
+     *
+     * @param payload - A JSON string representing one protocol frame.
+     * @returns `ok()` when the frame was passed to `ws.send()`, or `err()` if no open socket is attached, the backpressure
+     * threshold would be exceeded, or `ws.send()` threw.
+     */
+    writeRaw(payload: string): R {
         const ws = this.ws;
         if (!ws || (ws.readyState !== undefined && ws.readyState !== 1)) {
             return err();
         }
+        const maxBufferedBytes = this.inter.maxBufferedBytes ?? DEFAULT_MAX_BUFFERED_BYTES;
+        if (typeof ws.bufferedAmount === 'number' && maxBufferedBytes > 0) {
+            const payloadBytes = utf8ByteLength(payload);
+            if (ws.bufferedAmount + payloadBytes > maxBufferedBytes) {
+                this.onBackpressureDrop(payloadBytes);
+                return err();
+            }
+        }
         try {
             ws.send(payload);
         } catch {
+            this.resetBackpressure();
             try {
                 ws.close();
             } catch {
@@ -722,7 +770,78 @@ export class Connection {
             }
             return err();
         }
+        this.resetBackpressure();
         return ok();
+    }
+
+    /** Serializes and sends one frame; see {@link Connection.writeData} for when it fails. */
+    private write(message: unknown): R {
+        const ws = this.ws;
+        if (!ws || (ws.readyState !== undefined && ws.readyState !== 1)) {
+            return err();
+        }
+        let payload: string;
+        try {
+            payload = JSON.stringify(message);
+        } catch {
+            return err();
+        }
+        return this.writeRaw(payload);
+    }
+
+    /** Records a write rejected due to backpressure so {@link Connection.checkBackpressure} can track sustained stalls. */
+    private onBackpressureDrop(payloadBytes: number): void {
+        this.backpressureActive = true;
+        if (this.lastBlockedPayloadBytes === 0 || payloadBytes < this.lastBlockedPayloadBytes) {
+            this.lastBlockedPayloadBytes = payloadBytes;
+        }
+    }
+
+    /** Clears backpressure tracking state after a successful send, pong, drain, or socket lifecycle change. */
+    private resetBackpressure(): void {
+        this.backpressureActive = false;
+        this.backpressureTicks = 0;
+        this.lastBlockedPayloadBytes = 0;
+    }
+
+    /** Advances or clears the sustained-backpressure counter on each tick and terminates stalled sockets past the limit. */
+    private checkBackpressure(): void {
+        const ws = this.ws;
+        if (!ws || typeof ws.bufferedAmount !== 'number') {
+            this.resetBackpressure();
+            return;
+        }
+        const maxBufferedBytes = this.inter.maxBufferedBytes ?? DEFAULT_MAX_BUFFERED_BYTES;
+        const backpressureHp = this.inter.backpressureHp ?? DEFAULT_BACKPRESSURE_HP;
+        if (maxBufferedBytes <= 0 || backpressureHp <= 0) {
+            this.resetBackpressure();
+            return;
+        }
+        const stillBackpressured =
+            ws.bufferedAmount > maxBufferedBytes || (this.backpressureActive && ws.bufferedAmount > 0 && ws.bufferedAmount + this.lastBlockedPayloadBytes > maxBufferedBytes);
+        if (!stillBackpressured) {
+            this.resetBackpressure();
+            return;
+        }
+        this.backpressureTicks++;
+        if (this.backpressureTicks >= backpressureHp) {
+            this.closeStalledSocket(ws);
+        }
+    }
+
+    /** Terminates (or closes) a WebSocket that remained backpressured past the configured threshold. */
+    private closeStalledSocket(ws: MinimalWebSocket): void {
+        logger.warn(`WS Connection - closing stalled socket after ${this.backpressureTicks} ticks of sustained backpressure (bufferedAmount=${ws.bufferedAmount})`);
+        this.resetBackpressure();
+        try {
+            if (typeof ws.terminate === 'function') {
+                ws.terminate();
+            } else {
+                ws.close();
+            }
+        } catch {
+            // ignore
+        }
     }
 
     /**
@@ -770,6 +889,7 @@ export class Connection {
             });
         });
         this.streamQueue.clear();
+        this.resetBackpressure();
         if (this.ws) {
             this.ws.close(closeCode === CloseCodes.Unauthorized ? WsCloseCodes.Unauthorized : WsCloseCodes.Normal);
         }
@@ -826,6 +946,21 @@ export interface ConnectionInterface {
      * @defaultValue `undefined` (no limit)
      */
     maxPendingStreams?: number;
+    /**
+     * Maximum bytes allowed in `ws.bufferedAmount` (including the next frame's UTF-8 byte length) before outgoing writes are
+     * rejected with `err()` without calling `ws.send()`. Set to `0` to disable backpressure checks.
+     *
+     * @defaultValue 4194304 (4 MiB)
+     */
+    maxBufferedBytes?: number;
+    /**
+     * Ticks (seconds) a socket may remain continuously backpressured (without draining, sending successfully, or receiving a
+     * `pong_stream`) before the stalled socket is closed/terminated so dead slow consumers do not linger. Set to `0` to disable
+     * automatic termination on sustained backpressure.
+     *
+     * @defaultValue 10
+     */
+    backpressureHp?: number;
     /** Called once, at the end of {@link Connection.destroy}. */
     onDestroy: () => void;
     /**

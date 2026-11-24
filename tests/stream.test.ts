@@ -1,7 +1,8 @@
 import assert from 'node:assert';
 import { describe, it } from 'node:test';
 
-import { Stream, StreamCloseCodes, StreamController, StreamErr } from '../src/stream.js';
+import { CloseCodes, Connection } from '../src/connection.js';
+import { IncomingStreamController, OutgoingStreamController, Stream, StreamCloseCodes, StreamController, StreamErr } from '../src/stream.js';
 import { err, ok, Ok } from '../src/utils/result.js';
 
 class MockConnection {
@@ -264,5 +265,135 @@ describe('Stream & StreamController', () => {
         assert.strictEqual(stream.outgoingQueueCap, 128);
         assert.strictEqual(ctrl.incomingQueueCap, 512);
         assert.strictEqual(ctrl.outgoingQueueCap, 128);
+    });
+});
+
+describe('Stream single-pass JSON serialization', () => {
+    function makeRealConnection(maxBufferedBytes?: number) {
+        return new Connection(
+            {
+                maxBufferedBytes,
+                onDestroy: () => {},
+                onDisconnect: () => {},
+                onAccept: () => {},
+            },
+            'test',
+        );
+    }
+
+    function makeMockWs(bufferedAmount: number = 0) {
+        const sent: string[] = [];
+        const ws: any = {
+            readyState: 1,
+            bufferedAmount,
+            send: (data: string) => {
+                sent.push(data);
+            },
+            close: () => {},
+            onopen: null,
+            onerror: null,
+            onclose: null,
+            onmessage: null,
+        };
+        return { ws, sent };
+    }
+
+    it('returns Err(StreamErr.Invalid) for BigInt and circular objects with only one JSON.stringify attempt', async () => {
+        const conn = makeRealConnection();
+        const { ws, sent } = makeMockWs();
+        conn.connect(ws);
+        const ctrl = new OutgoingStreamController(conn, 'svc', null);
+
+        const originalStringify = JSON.stringify;
+        let stringifyCalls = 0;
+        JSON.stringify = ((...args: Parameters<typeof JSON.stringify>) => {
+            stringifyCalls++;
+            return originalStringify(...args);
+        }) as typeof JSON.stringify;
+
+        try {
+            // BigInt payload on connected socket
+            stringifyCalls = 0;
+            const bigIntRes = await ctrl.stream.write({ count: 42n });
+            assert.strictEqual(bigIntRes.isErr(), true);
+            if (bigIntRes.isErr()) {
+                assert.strictEqual(bigIntRes.e, StreamErr.Invalid);
+            }
+            assert.strictEqual(stringifyCalls, 1, 'BigInt should only invoke JSON.stringify once');
+            assert.strictEqual(ctrl.stream.active, true);
+            assert.strictEqual(ctrl.stream.outgoingQueueLength, 0);
+
+            // Circular object on connected socket
+            const circular: any = { name: 'loop' };
+            circular.self = circular;
+            stringifyCalls = 0;
+            const circularRes = await ctrl.stream.write(circular);
+            assert.strictEqual(circularRes.isErr(), true);
+            if (circularRes.isErr()) {
+                assert.strictEqual(circularRes.e, StreamErr.Invalid);
+            }
+            assert.strictEqual(stringifyCalls, 1, 'circular object should only invoke JSON.stringify once');
+            assert.strictEqual(ctrl.stream.active, true);
+            assert.strictEqual(ctrl.stream.outgoingQueueLength, 0);
+            assert.strictEqual(sent.length, 0);
+
+            // Also verify disconnected fallback path still invokes JSON.stringify only once
+            const disconnectedConn = makeRealConnection();
+            const disconnectedCtrl = new OutgoingStreamController(disconnectedConn, 'svc', null);
+            stringifyCalls = 0;
+            const disconnectedRes = await disconnectedCtrl.stream.write(99n);
+            assert.strictEqual(disconnectedRes.isErr(), true);
+            if (disconnectedRes.isErr()) {
+                assert.strictEqual(disconnectedRes.e, StreamErr.Invalid);
+            }
+            assert.strictEqual(stringifyCalls, 1, 'disconnected BigInt should only invoke JSON.stringify once');
+            disconnectedConn.destroy(CloseCodes.Intentional);
+        } finally {
+            JSON.stringify = originalStringify;
+            conn.destroy(CloseCodes.Intentional);
+        }
+    });
+
+    it('serializes a queued stream write only once across write, backpressure/disconnect retries, and flushOutgoing', async () => {
+        const conn = makeRealConnection(100);
+        const { ws, sent } = makeMockWs(150); // initially backpressured
+        conn.connect(ws);
+        const ctrl = new IncomingStreamController(conn, { type: 'new_stream', id: 'stream-once', name: 'svc', args: null });
+
+        const originalStringify = JSON.stringify;
+        let stringifyCalls = 0;
+        JSON.stringify = ((...args: Parameters<typeof JSON.stringify>) => {
+            stringifyCalls++;
+            return originalStringify(...args);
+        }) as typeof JSON.stringify;
+
+        try {
+            const writePromise = ctrl.stream.write({ msg: 'queued-once' });
+            assert.strictEqual(stringifyCalls, 1, 'initial write + queue fallback should stringify only once');
+            assert.strictEqual(ctrl.stream.outgoingQueueLength, 1);
+            assert.strictEqual(sent.length, 0);
+
+            // Tick while still backpressured: flushOutgoing retries without re-stringifying
+            ctrl._tic();
+            assert.strictEqual(stringifyCalls, 1, 'failed flush retry should not re-stringify');
+            assert.strictEqual(sent.length, 0);
+
+            // Drain buffer and flush on next tick: still no extra JSON.stringify
+            ws.bufferedAmount = 0;
+            ctrl._tic();
+            const res = await writePromise;
+            assert.strictEqual(res.isOk(), true);
+            assert.strictEqual(stringifyCalls, 1, 'successful flush should reuse pre-serialized payload');
+            assert.strictEqual(ctrl.stream.outgoingQueueLength, 0);
+            assert.strictEqual(sent.length, 1);
+            assert.deepStrictEqual(JSON.parse(sent[0]), {
+                type: 'data_stream',
+                id: ctrl.id,
+                data: { msg: 'queued-once' },
+            });
+        } finally {
+            JSON.stringify = originalStringify;
+            conn.destroy(CloseCodes.Intentional);
+        }
     });
 });
