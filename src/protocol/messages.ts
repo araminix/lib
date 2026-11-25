@@ -1,4 +1,4 @@
-import { t } from './utils/index.js';
+import { t } from '../utils/index.js';
 
 /**
  * Codec of `new_stream`: the sender opens stream `id` named `name`, with arguments `args`.

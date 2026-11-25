@@ -1,8 +1,8 @@
 import assert from 'node:assert';
 import { describe, it } from 'node:test';
 
-import { CloseCodes, Connection, ConnectionInterface } from '../src/connection.js';
-import { OutgoingStreamController, StreamCloseCodes } from '../src/stream.js';
+import { CloseCodes, Connection, ConnectionInterface } from '../src/connection/index.js';
+import { OutgoingStreamController, StreamCloseCodes } from '../src/stream/index.js';
 import { trimSlash, uuid } from '../src/utils/index.js';
 
 function makeWs(readyState: number = 1) {

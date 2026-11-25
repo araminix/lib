@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, it } from 'node:test';
 
-import { LOG_LEVEL, Logger } from '../src/utils/logger.js';
+import { LOG_LEVEL, Logger } from '../src/utils/logger/index.js';
 
 function captureConsole(run: () => void): { log: string[]; error: string[] } {
     const captured = { log: [] as string[], error: [] as string[] };

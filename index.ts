@@ -25,18 +25,18 @@
  *
  * @packageDocumentation
  */
-import * as messages from './src/messages.js';
-import { InitStreamErr, Stream, StreamCloseCodes, StreamErr } from './src/stream.js';
+import * as messages from './src/protocol/messages.js';
+import { InitStreamErr, Stream, StreamCloseCodes, StreamErr } from './src/stream/index.js';
 
 // Socket, SocketErr and ConnectionStatus.
-export * from './src/Socket.js';
+export * from './src/socket/index.js';
 
 // Connection, ConnectionInterface, MinimalWebSocket, WsCloseCodes and CloseCodes.
-export * from './src/connection.js';
+export * from './src/connection/index.js';
 // Result helpers, loop/once/wrap/wrapSync/sleep/uuid/trimSlash, LoopResult, Defined, the io-ts namespace `t`, and the logger.
 export * from './src/utils/index.js';
 // Client, ClientOptions, ConnectFail, FileInfo, AgentClient and its error types, axiosService.
-export * from './src/client.js';
+export * from './src/client/index.js';
 // The stream API and its enums, plus the protocol codecs as the `Message` namespace (e.g. `Message.NewStream.is(value)`).
-// The stream controllers in src/stream.ts are internal and deliberately not exported.
+// The stream controllers in src/stream/ are internal and deliberately not exported.
 export { Stream, StreamErr, InitStreamErr, messages as Message, StreamCloseCodes };

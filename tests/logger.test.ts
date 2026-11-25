@@ -1,7 +1,7 @@
 import assert from 'node:assert';
 import { describe, it } from 'node:test';
 
-import { LOG_LEVEL, Logger } from '../src/utils/logger.js';
+import { LOG_LEVEL, Logger } from '../src/utils/logger/index.js';
 
 describe('Logger', () => {
     it('instantiates with custom configuration', () => {

@@ -1,8 +1,8 @@
 import assert from 'node:assert';
 import { describe, it } from 'node:test';
 
-import { CloseCodes, Connection } from '../src/connection.js';
-import { IncomingStreamController, OutgoingStreamController, Stream, StreamCloseCodes, StreamController, StreamErr } from '../src/stream.js';
+import { CloseCodes, Connection } from '../src/connection/index.js';
+import { IncomingStreamController, OutgoingStreamController, Stream, StreamCloseCodes, StreamController, StreamErr } from '../src/stream/index.js';
 import { err, ok, Ok } from '../src/utils/result.js';
 
 class MockConnection {

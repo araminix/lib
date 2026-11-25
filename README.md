@@ -59,7 +59,7 @@
 - **Built-in authentication helpers.** Cookie sessions in browsers, an `x-token` header in Node.js, plus login, Google login, two-factor authentication, file uploads and presigned attachment URLs.
 - **Agent request/response.** [`AgentClient`](#agentclient) sends requests with [`post()`](#agentclientpost) and serves server-initiated tasks with [`onTask()`](#agentclientontask).
 - **Runtime-validated protocol.** Every frame is checked with an io-ts codec (see [`Message`](#message)); malformed frames are dropped.
-- **Structured logging.** [`Logger`](#logger) with five levels, coloured text or JSON output and optional daily log files in Node.js.
+- **Structured logging.** [`Logger`](#logger) with five levels, colored text or JSON output and optional daily log files in Node.js.
 - **ESM with types.** Ships compiled ES2022 modules, `.d.ts` declarations and declaration maps.
 
 ## Requirements
@@ -375,7 +375,7 @@ export async function consumeQuotes(stream: Stream<unknown, Quote>): Promise<voi
 
 ### Request/response with AgentClient
 
-[`AgentClient`](#agentclient) adds request/response on top of streams. Replies are serialised results: `{ ok: true, v }` or `{ ok: false, e }`.
+[`AgentClient`](#agentclient) adds request/response on top of streams. Replies are serialized results: `{ ok: true, v }` or `{ ok: false, e }`.
 
 - [`post(name, data, hp)`](#agentclientpost) opens a stream called `post` with the arguments `{ name, data }` and waits up to `hp` ticks for the reply. The server's `post` handler (in `@araminix/platform`, the agent's worker) produces the reply and closes the stream.
 - [`onTask(name)`](#agentclientontask) waits for the next task the server sends to this agent and hands you its input plus a one-shot `respond` function.
@@ -539,13 +539,13 @@ File storage is optional and Node.js only. `node:fs` and `node:path` are importe
 
 ## API reference
 
-Symbols are grouped by source module. Everything listed here is exported from the package entry point, [index.ts](index.ts). The stream controllers in [src/stream.ts](src/stream.ts) (`StreamController`, `IncomingStreamController`, `OutgoingStreamController`) are internal and not exported.
+Symbols are grouped by source module. Everything listed here is exported from the package entry point, [index.ts](index.ts). The stream controllers in [src/stream/](src/stream/) (`StreamController`, `IncomingStreamController`, `OutgoingStreamController`) are internal and not exported.
 
 ### Client and agent
 
 #### `Client`
 
-Source: [src/client.ts](src/client.ts)
+Source: [src/client/Client.ts](src/client/Client.ts)
 
 ```ts
 declare class Client {
@@ -626,7 +626,7 @@ if (connected.isErr()) {
 
 #### `ClientOptions`
 
-Source: [src/client.ts](src/client.ts)
+Source: [src/client/types.ts](src/client/types.ts)
 
 ```ts
 interface ClientOptions {
@@ -648,7 +648,7 @@ const client = new Client({ host: 'https://api.example.com', wsHost: 'wss://api.
 
 #### `ConnectFail`
 
-Source: [src/client.ts](src/client.ts)
+Source: [src/client/types.ts](src/client/types.ts)
 
 ```ts
 enum ConnectFail {
@@ -671,7 +671,7 @@ if (connected.isErr() && connected.e === ConnectFail.Unauthorized) {
 
 #### `FileInfo`
 
-Source: [src/client.ts](src/client.ts)
+Source: [src/client/types.ts](src/client/types.ts)
 
 ```ts
 interface FileInfo {
@@ -703,7 +703,7 @@ if (uploaded.isOk()) {
 
 #### `AgentClient`
 
-Source: [src/client.ts](src/client.ts)
+Source: [src/client/AgentClient.ts](src/client/AgentClient.ts)
 
 ```ts
 declare class AgentClient {
@@ -715,7 +715,7 @@ declare class AgentClient {
 }
 ```
 
-Request/response helper for the `agent` endpoint, usually obtained from `Client.connectAgent()`. Replies travel as serialised results (`{ ok: true, v }` or `{ ok: false, e }`).
+Request/response helper for the `agent` endpoint, usually obtained from `Client.connectAgent()`. Replies travel as serialized results (`{ ok: true, v }` or `{ ok: false, e }`).
 
 | Member                  | Description                                                                                   |
 | ----------------------- | --------------------------------------------------------------------------------------------- |
@@ -773,7 +773,7 @@ if (reply.isOk()) console.log(reply.unwrap().name);
 
 #### `AgentClientError`
 
-Source: [src/client.ts](src/client.ts)
+Source: [src/client/agentErrors.ts](src/client/agentErrors.ts)
 
 ```ts
 abstract class AgentClientError {
@@ -791,7 +791,7 @@ if (reply.isErr()) {
 
 #### `AgentClientErrorType`
 
-Source: [src/client.ts](src/client.ts)
+Source: [src/client/agentErrors.ts](src/client/agentErrors.ts)
 
 ```ts
 enum AgentClientErrorType {
@@ -808,7 +808,7 @@ const failedRemotely = reply.isErr() && reply.e.type === AgentClientErrorType.Ex
 
 #### `CommunicationClientAgentError`
 
-Source: [src/client.ts](src/client.ts)
+Source: [src/client/agentErrors.ts](src/client/agentErrors.ts)
 
 ```ts
 declare class CommunicationClientAgentError<E = unknown> implements AgentClientError {
@@ -828,7 +828,7 @@ if (reply.isErr() && reply.e instanceof CommunicationClientAgentError && reply.e
 
 #### `ExecutionClientAgentError`
 
-Source: [src/client.ts](src/client.ts)
+Source: [src/client/agentErrors.ts](src/client/agentErrors.ts)
 
 ```ts
 declare class ExecutionClientAgentError<E = unknown> implements AgentClientError {
@@ -848,7 +848,7 @@ if (reply.isErr() && reply.e instanceof ExecutionClientAgentError) {
 
 #### `axiosService`
 
-Source: [src/client.ts](src/client.ts)
+Source: [src/client/Client.ts](src/client/Client.ts)
 
 ```ts
 declare const axiosService: AxiosStatic; // the axios default instance
@@ -870,7 +870,7 @@ axiosService.interceptors.response.use(undefined, (error) => {
 
 #### `Socket`
 
-Source: [src/Socket.ts](src/Socket.ts)
+Source: [src/socket/Socket.ts](src/socket/Socket.ts)
 
 ```ts
 declare class Socket {
@@ -958,7 +958,7 @@ if (opened.isOk()) {
 
 #### `SocketErr`
 
-Source: [src/Socket.ts](src/Socket.ts)
+Source: [src/socket/types.ts](src/socket/types.ts)
 
 ```ts
 enum SocketErr {
@@ -976,7 +976,7 @@ if (incoming.isErr() && incoming.e === SocketErr.Closed) console.log('socket is 
 
 #### `ConnectionStatus`
 
-Source: [src/Socket.ts](src/Socket.ts)
+Source: [src/socket/types.ts](src/socket/types.ts)
 
 ```ts
 enum ConnectionStatus {
@@ -1006,7 +1006,7 @@ const online = socket.getConnectionStatus() === ConnectionStatus.Open;
 
 #### `Connection`
 
-Source: [src/connection.ts](src/connection.ts)
+Source: [src/connection/Connection.ts](src/connection/Connection.ts)
 
 ```ts
 declare class Connection {
@@ -1072,7 +1072,7 @@ if (connection.accept().isOk()) {
 
 #### `ConnectionInterface`
 
-Source: [src/connection.ts](src/connection.ts)
+Source: [src/connection/types.ts](src/connection/types.ts)
 
 ```ts
 interface ConnectionInterface {
@@ -1094,7 +1094,7 @@ const connection = new Connection({ hp: 120, streamRequestHp: 15, onDestroy: () 
 
 #### `MinimalWebSocket`
 
-Source: [src/connection.ts](src/connection.ts)
+Source: [src/connection/types.ts](src/connection/types.ts)
 
 ```ts
 interface MinimalWebSocket {
@@ -1128,7 +1128,7 @@ connection.connect(fake);
 
 #### `WsCloseCodes`
 
-Source: [src/connection.ts](src/connection.ts)
+Source: [src/connection/types.ts](src/connection/types.ts)
 
 ```ts
 enum WsCloseCodes {
@@ -1150,7 +1150,7 @@ ws.close(WsCloseCodes.Unauthorized);
 
 #### `CloseCodes`
 
-Source: [src/connection.ts](src/connection.ts)
+Source: [src/connection/types.ts](src/connection/types.ts)
 
 ```ts
 enum CloseCodes {
@@ -1173,7 +1173,7 @@ if (reason === CloseCodes.Died) console.warn('offline for too long');
 
 #### `Stream`
 
-Source: [src/stream.ts](src/stream.ts)
+Source: [src/stream/Stream.ts](src/stream/Stream.ts)
 
 ```ts
 declare class Stream<TArgs = unknown, TDataIn = unknown, TDataOut = unknown> {
@@ -1268,7 +1268,7 @@ stream.closeOk();
 
 #### `StreamErr`
 
-Source: [src/stream.ts](src/stream.ts)
+Source: [src/stream/types.ts](src/stream/types.ts)
 
 ```ts
 enum StreamErr {
@@ -1287,7 +1287,7 @@ if (message.isErr() && message.e === StreamErr.Dead) console.log('stream finishe
 
 #### `InitStreamErr`
 
-Source: [src/stream.ts](src/stream.ts)
+Source: [src/stream/types.ts](src/stream/types.ts)
 
 ```ts
 enum InitStreamErr {
@@ -1305,7 +1305,7 @@ if (opened.isErr() && opened.e === InitStreamErr.Dead) console.warn('the server 
 
 #### `StreamCloseCodes`
 
-Source: [src/stream.ts](src/stream.ts)
+Source: [src/stream/types.ts](src/stream/types.ts)
 
 ```ts
 enum StreamCloseCodes {
@@ -1327,7 +1327,7 @@ if ((await stream.waitClose()) !== StreamCloseCodes.Normal) console.warn('stream
 
 #### `Message`
 
-Source: [src/messages.ts](src/messages.ts)
+Source: [src/protocol/messages.ts](src/protocol/messages.ts)
 
 ```ts
 import { Message } from '@araminix/lib';
@@ -1546,7 +1546,7 @@ markReady(); // err(): already resolved
 
 #### `loop()`
 
-Source: [src/utils/index.ts](src/utils/index.ts)
+Source: [src/utils/helpers.ts](src/utils/helpers.ts)
 
 ```ts
 declare function loop(fun: () => Promise<LoopResult>, onError?: (error: unknown) => LoopResult | Promise<LoopResult>): void;
@@ -1572,7 +1572,7 @@ loop(async () => {
 
 #### `LoopResult`
 
-Source: [src/utils/index.ts](src/utils/index.ts)
+Source: [src/utils/helpers.ts](src/utils/helpers.ts)
 
 ```ts
 enum LoopResult {
@@ -1594,7 +1594,7 @@ loop(async () => {
 
 #### `once()`
 
-Source: [src/utils/index.ts](src/utils/index.ts)
+Source: [src/utils/helpers.ts](src/utils/helpers.ts)
 
 ```ts
 declare function once(fun: () => Promise<void> | void): void;
@@ -1614,7 +1614,7 @@ once(async () => {
 
 #### `wrap()`
 
-Source: [src/utils/index.ts](src/utils/index.ts)
+Source: [src/utils/helpers.ts](src/utils/helpers.ts)
 
 ```ts
 declare function wrap<OkType, ErrType = Error>(exe: Promise<OkType> | (() => Promise<OkType>)): Promise<Result<OkType, ErrType>>;
@@ -1636,7 +1636,7 @@ if (response.isOk()) console.log(response.v.status);
 
 #### `wrapSync()`
 
-Source: [src/utils/index.ts](src/utils/index.ts)
+Source: [src/utils/helpers.ts](src/utils/helpers.ts)
 
 ```ts
 declare function wrapSync<OkType, ErrType = Error>(exe: () => OkType): Result<OkType, ErrType>;
@@ -1656,7 +1656,7 @@ if (parsed.isErr()) console.error(parsed.e.message);
 
 #### `sleep()`
 
-Source: [src/utils/index.ts](src/utils/index.ts)
+Source: [src/utils/helpers.ts](src/utils/helpers.ts)
 
 ```ts
 declare function sleep(ms: number): Promise<void>;
@@ -1674,7 +1674,7 @@ await sleep(250);
 
 #### `uuid()`
 
-Source: [src/utils/index.ts](src/utils/index.ts)
+Source: [src/utils/helpers.ts](src/utils/helpers.ts)
 
 ```ts
 declare function uuid(): string;
@@ -1688,7 +1688,7 @@ const requestId = uuid(); // e.g. '3b241101-e2bb-4255-8caf-4136c566a962'
 
 #### `trimSlash()`
 
-Source: [src/utils/index.ts](src/utils/index.ts)
+Source: [src/utils/helpers.ts](src/utils/helpers.ts)
 
 ```ts
 declare function trimSlash(str: string): string;
@@ -1706,7 +1706,7 @@ trimSlash('//api/v1//'); // 'api/v1'
 
 #### `Defined`
 
-Source: [src/utils/index.ts](src/utils/index.ts)
+Source: [src/utils/helpers.ts](src/utils/helpers.ts)
 
 ```ts
 type Defined<T> = T extends undefined ? never : T;
@@ -1744,7 +1744,7 @@ if (message.isOk() && Job.is(message.unwrap())) {
 
 #### `Logger`
 
-Source: [src/utils/logger.ts](src/utils/logger.ts)
+Source: [src/utils/logger/Logger.ts](src/utils/logger/Logger.ts)
 
 ```ts
 declare class Logger {
@@ -1781,7 +1781,7 @@ log.info('started'); // {"timestamp":"...","level":"INFO","prefix":" [api]","mes
 
 #### `logger` instance
 
-Source: [src/utils/logger.ts](src/utils/logger.ts)
+Source: [src/utils/logger/Logger.ts](src/utils/logger/Logger.ts)
 
 ```ts
 declare const logger: Logger;
@@ -1795,7 +1795,7 @@ logger.configure({ level: LOG_LEVEL.WARN });
 
 #### `LOG_LEVEL`
 
-Source: [src/utils/logger.ts](src/utils/logger.ts)
+Source: [src/utils/logger/types.ts](src/utils/logger/types.ts)
 
 ```ts
 enum LOG_LEVEL {
@@ -1815,7 +1815,7 @@ logger.setLevel(LOG_LEVEL.TRACE); // print every incoming WebSocket frame
 
 #### `LoggerConfig`
 
-Source: [src/utils/logger.ts](src/utils/logger.ts)
+Source: [src/utils/logger/types.ts](src/utils/logger/types.ts)
 
 ```ts
 interface LoggerConfig {
@@ -1836,7 +1836,7 @@ const config: LoggerConfig = { level: LOG_LEVEL.INFO, showStackTrace: true, show
 
 #### `StoreOptions`
 
-Source: [src/utils/logger.ts](src/utils/logger.ts)
+Source: [src/utils/logger/types.ts](src/utils/logger/types.ts)
 
 ```ts
 interface StoreOptions {
@@ -1886,14 +1886,14 @@ logger.initStore({ directory: './logs', level: LOG_LEVEL.WARN, filePrefix: 'agen
 
 [`LoggerConfig`](#loggerconfig), passed to `new Logger(config)` (complete) or `logger.configure(options)` (any subset).
 
-| Option           | Type                   | Default           | Description                                                                                                                                                                                         |
-| ---------------- | ---------------------- | ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `level`          | `LOG_LEVEL`            | `LOG_LEVEL.DEBUG` | Console threshold. File storage has its own threshold.                                                                                                                                              |
-| `showStackTrace` | `boolean`              | `true`            | Include stacks when errors are serialised (JSON output and files); otherwise `Name: message`. In `'text'` output arguments are passed to the console unchanged.                                     |
-| `showTimestamp`  | `boolean`              | `true`            | Prefix console output with the UTC timestamp. File lines always include it.                                                                                                                         |
-| `format`         | `'json' \| 'text'`     | `'text'`          | `'text'`: coloured `[timestamp] [LEVEL] [prefix]` header plus the raw arguments. `'json'`: one JSON string with `timestamp`, `level`, `prefix` and `message` per call. Files always use text lines. |
-| `storeOptions`   | `StoreOptions \| null` | `null`            | File storage settings; `null` or `undefined` for console only. See also `initStore()`.                                                                                                              |
-| `prefix`         | `string \| null`       | `null`            | Label printed as ` [prefix]` after the level in console output (not in files).                                                                                                                      |
+| Option           | Type                   | Default           | Description                                                                                                                                                                                        |
+| ---------------- | ---------------------- | ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `level`          | `LOG_LEVEL`            | `LOG_LEVEL.DEBUG` | Console threshold. File storage has its own threshold.                                                                                                                                             |
+| `showStackTrace` | `boolean`              | `true`            | Include stacks when errors are serialized (JSON output and files); otherwise `Name: message`. In `'text'` output arguments are passed to the console unchanged.                                    |
+| `showTimestamp`  | `boolean`              | `true`            | Prefix console output with the UTC timestamp. File lines always include it.                                                                                                                        |
+| `format`         | `'json' \| 'text'`     | `'text'`          | `'text'`: colored `[timestamp] [LEVEL] [prefix]` header plus the raw arguments. `'json'`: one JSON string with `timestamp`, `level`, `prefix` and `message` per call. Files always use text lines. |
+| `storeOptions`   | `StoreOptions \| null` | `null`            | File storage settings; `null` or `undefined` for console only. See also `initStore()`.                                                                                                             |
+| `prefix`         | `string \| null`       | `null`            | Label printed as ` [prefix]` after the level in console output (not in files).                                                                                                                     |
 
 ### Log storage options
 

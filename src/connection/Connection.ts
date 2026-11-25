@@ -1,110 +1,11 @@
-import { AcceptEndpoint, AcceptStream, CloseStream, DataStream, NewStream, PingStream, PongStream } from './messages.js';
-import { SocketErr } from './Socket.js';
-import { IncomingStreamController, InitStreamErr, OutgoingStreamController, Stream, StreamCloseCodes as StreamCloseCode, StreamController } from './stream.js';
-import { logger } from './utils/logger.js';
-import { deal, err, Err, ok, Ok, R, Result } from './utils/result.js';
-
-/**
- * The subset of the WHATWG `WebSocket` interface that a {@link Connection} needs.
- *
- * The global `WebSocket` of browsers and Node.js >= 22 satisfies it, as does the `WebSocket` of the `ws` package used on servers.
- * {@link Connection.connect} assigns the four `on*` handlers, replacing any that were set before.
- *
- * @example
- * ```ts
- * // A test double, as used in the unit tests:
- * const sent: string[] = [];
- * const ws: MinimalWebSocket = {
- *     readyState: 1,
- *     send: (data) => sent.push(data),
- *     close: () => {},
- *     onopen: null,
- *     onerror: null,
- *     onclose: null,
- *     onmessage: null,
- * };
- * connection.connect(ws);
- * ```
- */
-export interface MinimalWebSocket {
-    /** Sends one text frame. May throw; {@link Connection} then closes the socket and lets the reconnect logic take over. */
-    send(data: string): void;
-    /** Starts the closing handshake, optionally with a close code (e.g. one of {@link WsCloseCodes}) and a reason. */
-    close(code?: number, reason?: string): void;
-    /**
-     * Optional immediate socket teardown (provided by Node's `ws` package). When present, used to kill sockets stalled under
-     * sustained backpressure without waiting for a closing handshake.
-     */
-    terminate?: () => void;
-    /**
-     * Bytes queued by the WebSocket implementation waiting to be flushed to the network. Optional: when missing, backpressure
-     * checks are skipped.
-     */
-    bufferedAmount?: number;
-    /** Open handler; assigned by {@link Connection.connect}. */
-    onopen: ((event: any) => void) | null;
-    /** Error handler; assigned by {@link Connection.connect}, which only logs errors (a `close` event follows). */
-    onerror: ((event: any) => void) | null;
-    /** Close handler; assigned by {@link Connection.connect}, which forwards `code` to {@link ConnectionInterface.onDisconnect}. */
-    onclose: ((event: { code: number; reason?: string }) => void) | null;
-    /** Message handler; assigned by {@link Connection.connect}. `data` is a JSON string, or a value whose `toString()` is (e.g. a Node `Buffer`). */
-    onmessage: ((event: { data: any }) => void) | null;
-    /**
-     * WHATWG ready state: 0 connecting, 1 open, 2 closing, 3 closed. Optional: when it is missing the socket is treated as
-     * open and every send is attempted.
-     */
-    readyState?: number;
-}
-
-/** Default {@link ConnectionInterface.hp}: ticks a connection may spend without a socket before it dies. */
-const DEFAULT_HP = 300; // seconds (60 * 5) 5 minutes
-/** Default {@link ConnectionInterface.streamRequestHp}. */
-const DEFAULT_STREAM_REQUEST_HP = 10; // seconds a new_stream request waits for an acquirer
-/** Default {@link ConnectionInterface.maxBufferedBytes}: 4 MiB. */
-const DEFAULT_MAX_BUFFERED_BYTES = 4 * 1024 * 1024;
-/** Default {@link ConnectionInterface.backpressureHp}: ticks of sustained backpressure before closing a stalled socket. */
-const DEFAULT_BACKPRESSURE_HP = 10;
-
-let fallbackTextEncoder: TextEncoder | undefined;
-
-/** Returns the UTF-8 byte length of `value`, using `Buffer.byteLength` in Node.js with a `TextEncoder` fallback for browsers. */
-function utf8ByteLength(value: string): number {
-    if (typeof Buffer !== 'undefined' && typeof Buffer.byteLength === 'function') {
-        return Buffer.byteLength(value, 'utf8');
-    }
-    fallbackTextEncoder ??= new TextEncoder();
-    return fallbackTextEncoder.encode(value).byteLength;
-}
-
-/** An incoming `new_stream` request waiting for {@link Connection.acquireStream}; it loses 1 hp per tick and is cancelled at 0. */
-class StreamRequest {
-    /** The validated `new_stream` message. */
-    message: { id: string; name: string; args: unknown };
-    /** Called when hp reaches 0; removes the request from the queue and closes it with `Lost`. */
-    onCancel: () => void;
-    /** Ticks left before the request is cancelled. */
-    hp: number;
-
-    /** Creates a request; `hp` defaults to {@link DEFAULT_STREAM_REQUEST_HP}. */
-    constructor(message: { id: string; name: string; args: unknown }, onCancel: () => void, hp: number = DEFAULT_STREAM_REQUEST_HP) {
-        this.message = message;
-        this.onCancel = onCancel;
-        this.hp = hp;
-    }
-
-    /** Removes 1 hp (called once per tick) and cancels the request when hp reaches exactly 0. */
-    damage(): void {
-        this.hp--;
-        if (this.hp === 0) {
-            this.onCancel();
-        }
-    }
-
-    /** The stream id of the request. */
-    get id(): string {
-        return this.message.id;
-    }
-}
+import { SocketErr } from '../socket/types.js';
+import { IncomingStreamController, InitStreamErr, OutgoingStreamController, Stream, StreamCloseCodes as StreamCloseCode, StreamController } from '../stream/index.js';
+import { logger } from '../utils/logger/index.js';
+import { deal, err, Err, ok, Ok, R, Result } from '../utils/result.js';
+import { BackpressureMonitor } from './backpressure.js';
+import { dispatchIncomingFrame, normalizeStreamCloseCode, parseIncomingMessage } from './frameRouter.js';
+import { StreamRequestQueue } from './streamQueue.js';
+import { CloseCodes, ConnectionInterface, DEFAULT_BACKPRESSURE_HP, DEFAULT_HP, DEFAULT_MAX_BUFFERED_BYTES, MinimalWebSocket, WsCloseCodes } from './types.js';
 
 /**
  * One logical endpoint connection: many {@link Stream | streams} multiplexed over a WebSocket that can be replaced.
@@ -152,7 +53,7 @@ export class Connection {
     /** Ticks left without an attached socket before the connection dies; refilled when a socket opens. */
     private hp: number;
     /** Incoming `new_stream` requests that were not acquired yet, by stream name (FIFO per name). */
-    private streamQueue: Map<string, StreamRequest[]> = new Map();
+    private readonly streamQueue = new StreamRequestQueue();
     /** Pending {@link Connection.acquireStream} resolvers, at most one per stream name. */
     private promises: Map<string, (result: Result<Stream<any, any, any>, SocketErr>) => void> = new Map();
     /** Live stream controllers (incoming and outgoing) by stream id. */
@@ -165,12 +66,8 @@ export class Connection {
     private resolveClose: (code: CloseCodes) => void;
     /** `true` once {@link Connection.destroy} ran. A dead connection never comes back. */
     dead: boolean = false;
-    /** `true` once a write was dropped due to backpressure since the last successful send, pong, drain, or socket attach. */
-    private backpressureActive: boolean = false;
-    /** Consecutive 1-second ticks during which the attached socket remained backpressured. */
-    private backpressureTicks: number = 0;
-    /** Smallest frame byte length rejected during the current backpressure episode, used to detect when the buffer drains. */
-    private lastBlockedPayloadBytes: number = 0;
+    /** Tracks sustained WebSocket send-buffer backpressure and closes stalled sockets. */
+    private readonly backpressure = new BackpressureMonitor();
     /** The 1-second tick timer; unref'd, and cleared on destroy. */
     private timer: NodeJS.Timeout = setInterval(() => {
         this.tic();
@@ -255,9 +152,7 @@ export class Connection {
         if (this.dead) {
             return err();
         }
-        const result = this.write({
-            type: 'accept_endpoint',
-        });
+        const result = this.write({ type: 'accept_endpoint' });
         if (result.isErr()) {
             this.destroy(CloseCodes.Unexpected);
             return result;
@@ -289,11 +184,7 @@ export class Connection {
      * @returns `ok()` if the frame was handed to the socket, `err()` otherwise (see {@link Connection.writeData}).
      */
     writeAcceptStream(streamId: string): R {
-        const message = {
-            type: 'accept_stream',
-            id: streamId,
-        };
-        return this.write(message);
+        return this.write({ type: 'accept_stream', id: streamId });
     }
 
     /**
@@ -306,14 +197,13 @@ export class Connection {
      * @returns `ok()` if the frame was handed to the socket, `err()` otherwise (see {@link Connection.writeData}).
      */
     writeNewStream<TArgs = unknown>(streamId: string, name: string, args: TArgs): R {
-        const message = {
+        return this.write({
             type: 'new_stream',
             id: streamId,
             name,
             // JSON.stringify drops undefined properties, and a new_stream frame without `args` fails validation on the peer.
             args: args === undefined ? null : args,
-        };
-        return this.write(message);
+        });
     }
 
     /**
@@ -334,12 +224,7 @@ export class Connection {
      * ```
      */
     writeData<T = unknown>(streamId: string, data: T): R {
-        const message = {
-            type: 'data_stream',
-            id: streamId,
-            data,
-        };
-        return this.write(message);
+        return this.write({ type: 'data_stream', id: streamId, data });
     }
 
     /**
@@ -350,12 +235,7 @@ export class Connection {
      * @returns `ok()` if the frame was handed to the socket, `err()` otherwise (see {@link Connection.writeData}).
      */
     writeClose(streamId: string, code: StreamCloseCode): R {
-        const message = {
-            type: 'close_stream',
-            id: streamId,
-            code,
-        };
-        return this.write(message);
+        return this.write({ type: 'close_stream', id: streamId, code });
     }
 
     /**
@@ -365,11 +245,7 @@ export class Connection {
      * @returns `ok()` if the frame was handed to the socket, `err()` otherwise (see {@link Connection.writeData}).
      */
     writePing(streamId: string): R {
-        const message = {
-            type: 'ping_stream',
-            id: streamId,
-        };
-        return this.write(message);
+        return this.write({ type: 'ping_stream', id: streamId });
     }
 
     /**
@@ -379,11 +255,56 @@ export class Connection {
      * @returns `ok()` if the frame was handed to the socket, `err()` otherwise (see {@link Connection.writeData}).
      */
     writePong(streamId: string): R {
-        const message = {
-            type: 'pong_stream',
-            id: streamId,
-        };
-        return this.write(message);
+        return this.write({ type: 'pong_stream', id: streamId });
+    }
+
+    /**
+     * Sends a pre-serialized JSON frame string over the attached WebSocket.
+     *
+     * Used internally by stream controllers so queued messages are serialized only once. Checks socket readiness and
+     * {@link ConnectionInterface.maxBufferedBytes} backpressure before calling `ws.send()`.
+     *
+     * @param payload - A JSON string representing one protocol frame.
+     * @returns `ok()` when the frame was passed to `ws.send()`, or `err()` if no open socket is attached, the backpressure
+     * threshold would be exceeded, or `ws.send()` threw.
+     */
+    writeRaw(payload: string): R {
+        const ws = this.ws;
+        if (!ws || (ws.readyState !== undefined && ws.readyState !== 1)) {
+            return err();
+        }
+        const maxBufferedBytes = this.inter.maxBufferedBytes ?? DEFAULT_MAX_BUFFERED_BYTES;
+        if (this.backpressure.wouldOverflow(ws, payload, maxBufferedBytes)) {
+            return err();
+        }
+        try {
+            ws.send(payload);
+        } catch {
+            this.backpressure.reset();
+            try {
+                ws.close();
+            } catch {
+                // ignore
+            }
+            return err();
+        }
+        this.backpressure.reset();
+        return ok();
+    }
+
+    /** Serializes and sends one frame; see {@link Connection.writeData} for when it fails. */
+    private write(message: unknown): R {
+        const ws = this.ws;
+        if (!ws || (ws.readyState !== undefined && ws.readyState !== 1)) {
+            return err();
+        }
+        let payload: string;
+        try {
+            payload = JSON.stringify(message);
+        } catch {
+            return err();
+        }
+        return this.writeRaw(payload);
     }
 
     /**
@@ -470,28 +391,24 @@ export class Connection {
      */
     private roll(): void {
         for (const [name, promise] of this.promises) {
-            const streams = this.streamQueue.get(name);
-            if (!streams) {
-                continue;
-            }
-            const streamRequest = streams.shift();
+            const streamRequest = this.streamQueue.shift(name);
             if (!streamRequest) {
                 continue;
             }
             const result = this.writeAcceptStream(streamRequest.id);
             if (result.isErr()) {
-                streams.unshift(streamRequest);
+                this.streamQueue.unshift(name, streamRequest);
                 return;
             }
-            const stream = this.startStream(streamRequest.message as any);
+            const stream = this.startStream(streamRequest.message);
             this.promises.delete(name);
             promise(new Ok(stream));
         }
     }
 
     /** Creates and registers the controller of an accepted `new_stream` request and returns its stream. */
-    private startStream(message: any): Stream<any, any, any> {
-        const streamController = new IncomingStreamController(this, message);
+    private startStream(message: { id: string; name: string; args: unknown }): Stream<any, any, any> {
+        const streamController = new IncomingStreamController(this, { type: 'new_stream', ...message });
         this.streams.set(streamController.id, streamController);
         return streamController.stream;
     }
@@ -527,21 +444,16 @@ export class Connection {
         if (reset) {
             this.hp = this.inter.hp ?? DEFAULT_HP;
         }
-        this.resetBackpressure();
+        this.backpressure.reset();
         const oldWs = this.ws;
-        Object.defineProperty(this, 'ws', {
-            value: ws,
-            writable: true,
-            configurable: true,
-            enumerable: true,
-        });
+        this.setWs(ws);
         if (oldWs) {
             oldWs.close(WsCloseCodes.ConcurrentConnection);
         }
         ws.onopen = () => {
             if (this.ws === ws) {
                 this.hp = this.inter.hp ?? DEFAULT_HP;
-                this.resetBackpressure();
+                this.backpressure.reset();
                 this.roll();
                 this.inter.onOpen?.();
             }
@@ -551,68 +463,50 @@ export class Connection {
         };
         ws.onclose = (event: { code: number }) => {
             if (this.ws === ws) {
-                this.resetBackpressure();
-                Object.defineProperty(this, 'ws', {
-                    value: undefined,
-                    writable: true,
-                    configurable: true,
-                    enumerable: true,
-                });
+                this.backpressure.reset();
+                this.setWs(undefined);
                 this.inter.onDisconnect(event.code);
                 logger.warn(`WS Connection - onClose, code: ${event.code}`);
             }
         };
         ws.onmessage = (message: { data: any }) => {
-            if (this.ws === ws) {
-                try {
-                    const raw = typeof message.data === 'string' ? message.data : message.data.toString();
-                    const data = JSON.parse(raw);
-                    logger.trace('WS Connection - onMessage:', raw);
-                    this.onIncoming(data);
-                } catch (error) {
-                    logger.error(`WS Connection - onMessage JSON Parse Error:`, error);
-                }
+            if (this.ws !== ws) {
+                return;
+            }
+            const parsed = parseIncomingMessage(message.data);
+            if (parsed.ok) {
+                this.onIncoming(parsed.data);
             }
         };
         this.roll();
     }
 
+    /** Assigns `this.ws` with standard property descriptor flags. */
+    private setWs(ws: MinimalWebSocket | undefined): void {
+        Object.defineProperty(this, 'ws', {
+            value: ws,
+            writable: true,
+            configurable: true,
+            enumerable: true,
+        });
+    }
+
     /** Routes a parsed frame to its handler by message type; frames that match no codec are ignored. */
     private onIncoming(data: unknown): void {
-        switch (true) {
-            case NewStream.is(data): {
-                this.onNewStream(data);
-                break;
-            }
-            case DataStream.is(data): {
-                this.onData(data);
-                break;
-            }
-            case CloseStream.is(data): {
-                this.onCloseStream(data);
-                break;
-            }
-            case PingStream.is(data): {
-                this.onPingStream(data);
-                break;
-            }
-            case PongStream.is(data): {
-                this.onPongStream(data);
-                break;
-            }
-            case AcceptStream.is(data): {
-                this.onAcceptStream(data);
-                break;
-            }
-            case AcceptEndpoint.is(data): {
-                if (this.accepted) {
-                    break;
+        dispatchIncomingFrame(data, {
+            onNewStream: (frame) => this.onNewStream(frame),
+            onData: (frame) => this.onData(frame),
+            onCloseStream: (frame) => this.onCloseStream(frame),
+            onPingStream: (frame) => this.onPingStream(frame),
+            onPongStream: (frame) => this.onPongStream(frame),
+            onAcceptStream: (frame) => this.onAcceptStream(frame),
+            onAcceptEndpoint: () => {
+                if (!this.accepted) {
+                    this.accepted = true;
+                    this.inter.onAccept();
                 }
-                this.accepted = true;
-                this.inter.onAccept();
-                break;
-            }
-        }
+            },
+        });
     }
 
     /**
@@ -627,10 +521,8 @@ export class Connection {
             this.destroy(CloseCodes.Died);
             return;
         }
-        this.checkBackpressure();
-        this.streamQueue.forEach((streams) => {
-            streams.forEach((stream) => stream.damage());
-        });
+        this.backpressure.check(this.ws, this.inter.maxBufferedBytes ?? DEFAULT_MAX_BUFFERED_BYTES, this.inter.backpressureHp ?? DEFAULT_BACKPRESSURE_HP);
+        this.streamQueue.tick();
         this.streams.forEach((stream) => {
             stream._tic();
         });
@@ -648,7 +540,7 @@ export class Connection {
 
     /** Handles `pong_stream` for a live stream, or answers `close_stream` NotFound for unknown ids. */
     private onPongStream(data: { id: string }): void {
-        this.resetBackpressure();
+        this.backpressure.reset();
         const stream = this.streams.get(data.id);
         if (!stream) {
             this.writeClose(data.id, StreamCloseCode.NotFound);
@@ -682,180 +574,25 @@ export class Connection {
      * or queued are rejected with `Duplicate`; requests beyond {@link ConnectionInterface.maxPendingStreams} with `Error`.
      */
     private onNewStream(data: { id: string; name: string; args: unknown }): void {
-        if (this.streams.has(data.id) || this.isQueued(data.id)) {
+        if (this.streams.has(data.id) || this.streamQueue.isQueued(data.id)) {
             this.writeClose(data.id, StreamCloseCode.Duplicate);
             return;
         }
-        if (this.inter.maxPendingStreams !== undefined && this.pendingStreamCount() >= this.inter.maxPendingStreams) {
+        if (this.inter.maxPendingStreams !== undefined && this.streamQueue.count() >= this.inter.maxPendingStreams) {
             this.writeClose(data.id, StreamCloseCode.Error);
             return;
         }
-        const streamRequest = new StreamRequest(
-            data,
-            () => {
-                const requests = this.streamQueue.get(data.name);
-                if (!requests) {
-                    return;
-                }
-                const newRequests = requests.filter((request) => request.id !== data.id);
-                if (newRequests.length === requests.length) {
-                    return;
-                }
-                this.writeClose(data.id, StreamCloseCode.Lost);
-                if (newRequests.length === 0) {
-                    this.streamQueue.delete(data.name);
-                    return;
-                }
-                this.streamQueue.set(data.name, newRequests);
-            },
-            this.inter.streamRequestHp,
-        );
-        if (!this.streamQueue.has(data.name)) {
-            this.streamQueue.set(data.name, []);
-        }
-        this.streamQueue.get(data.name)!.push(streamRequest);
+        this.streamQueue.enqueue(data, (id) => this.writeClose(id, StreamCloseCode.Lost), this.inter.streamRequestHp);
         this.roll();
     }
 
-    /** Whether a request with this stream id is waiting in the queue. */
-    private isQueued(id: string): boolean {
-        for (const requests of this.streamQueue.values()) {
-            if (requests.some((request) => request.id === id)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    /** Number of queued (not yet acquired) stream requests across all names. */
-    private pendingStreamCount(): number {
-        let count = 0;
-        this.streamQueue.forEach((requests) => {
-            count += requests.length;
-        });
-        return count;
-    }
-
-    /**
-     * Sends a pre-serialized JSON frame string over the attached WebSocket.
-     *
-     * Used internally by stream controllers so queued messages are serialized only once. Checks socket readiness and
-     * {@link ConnectionInterface.maxBufferedBytes} backpressure before calling `ws.send()`.
-     *
-     * @param payload - A JSON string representing one protocol frame.
-     * @returns `ok()` when the frame was passed to `ws.send()`, or `err()` if no open socket is attached, the backpressure
-     * threshold would be exceeded, or `ws.send()` threw.
-     */
-    writeRaw(payload: string): R {
-        const ws = this.ws;
-        if (!ws || (ws.readyState !== undefined && ws.readyState !== 1)) {
-            return err();
-        }
-        const maxBufferedBytes = this.inter.maxBufferedBytes ?? DEFAULT_MAX_BUFFERED_BYTES;
-        if (typeof ws.bufferedAmount === 'number' && maxBufferedBytes > 0) {
-            const payloadBytes = utf8ByteLength(payload);
-            if (ws.bufferedAmount + payloadBytes > maxBufferedBytes) {
-                this.onBackpressureDrop(payloadBytes);
-                return err();
-            }
-        }
-        try {
-            ws.send(payload);
-        } catch {
-            this.resetBackpressure();
-            try {
-                ws.close();
-            } catch {
-                // ignore
-            }
-            return err();
-        }
-        this.resetBackpressure();
-        return ok();
-    }
-
-    /** Serializes and sends one frame; see {@link Connection.writeData} for when it fails. */
-    private write(message: unknown): R {
-        const ws = this.ws;
-        if (!ws || (ws.readyState !== undefined && ws.readyState !== 1)) {
-            return err();
-        }
-        let payload: string;
-        try {
-            payload = JSON.stringify(message);
-        } catch {
-            return err();
-        }
-        return this.writeRaw(payload);
-    }
-
-    /** Records a write rejected due to backpressure so {@link Connection.checkBackpressure} can track sustained stalls. */
-    private onBackpressureDrop(payloadBytes: number): void {
-        this.backpressureActive = true;
-        if (this.lastBlockedPayloadBytes === 0 || payloadBytes < this.lastBlockedPayloadBytes) {
-            this.lastBlockedPayloadBytes = payloadBytes;
-        }
-    }
-
-    /** Clears backpressure tracking state after a successful send, pong, drain, or socket lifecycle change. */
-    private resetBackpressure(): void {
-        this.backpressureActive = false;
-        this.backpressureTicks = 0;
-        this.lastBlockedPayloadBytes = 0;
-    }
-
-    /** Advances or clears the sustained-backpressure counter on each tick and terminates stalled sockets past the limit. */
-    private checkBackpressure(): void {
-        const ws = this.ws;
-        if (!ws || typeof ws.bufferedAmount !== 'number') {
-            this.resetBackpressure();
-            return;
-        }
-        const maxBufferedBytes = this.inter.maxBufferedBytes ?? DEFAULT_MAX_BUFFERED_BYTES;
-        const backpressureHp = this.inter.backpressureHp ?? DEFAULT_BACKPRESSURE_HP;
-        if (maxBufferedBytes <= 0 || backpressureHp <= 0) {
-            this.resetBackpressure();
-            return;
-        }
-        const stillBackpressured =
-            ws.bufferedAmount > maxBufferedBytes || (this.backpressureActive && ws.bufferedAmount > 0 && ws.bufferedAmount + this.lastBlockedPayloadBytes > maxBufferedBytes);
-        if (!stillBackpressured) {
-            this.resetBackpressure();
-            return;
-        }
-        this.backpressureTicks++;
-        if (this.backpressureTicks >= backpressureHp) {
-            this.closeStalledSocket(ws);
-        }
-    }
-
-    /** Terminates (or closes) a WebSocket that remained backpressured past the configured threshold. */
-    private closeStalledSocket(ws: MinimalWebSocket): void {
-        logger.warn(`WS Connection - closing stalled socket after ${this.backpressureTicks} ticks of sustained backpressure (bufferedAmount=${ws.bufferedAmount})`);
-        this.resetBackpressure();
-        try {
-            if (typeof ws.terminate === 'function') {
-                ws.terminate();
-            } else {
-                ws.close();
-            }
-        } catch {
-            // ignore
-        }
-    }
-
-    /**
-     * Handles `close_stream`: closes the local side of the stream with the peer's code, without replying. Unknown ids are ignored,
-     * and codes that are not a {@link StreamCloseCodes} value are reported as `Error` (an empty code would otherwise leave
-     * `waitClose()` pending forever).
-     */
+    /** Handles `close_stream`: closes the local side of the stream with the peer's code, without replying. */
     private onCloseStream(data: { id: string; code: string }): void {
         const stream = this.streams.get(data.id);
         if (!stream) {
             return;
         }
-        const knownCode = (Object.values(StreamCloseCode) as string[]).includes(data.code);
-        stream.onClose(knownCode ? (data.code as StreamCloseCode) : StreamCloseCode.Error);
+        stream.onClose(normalizeStreamCloseCode(data.code));
     }
 
     /**
@@ -883,13 +620,10 @@ export class Connection {
         this.streams.forEach((stream) => {
             stream.close(StreamCloseCode.Lost);
         });
-        this.streamQueue.forEach((requests) => {
-            requests.forEach((request) => {
-                this.writeClose(request.id, StreamCloseCode.Lost);
-            });
+        this.streamQueue.drainAndClear((id) => {
+            this.writeClose(id, StreamCloseCode.Lost);
         });
-        this.streamQueue.clear();
-        this.resetBackpressure();
+        this.backpressure.reset();
         if (this.ws) {
             this.ws.close(closeCode === CloseCodes.Unauthorized ? WsCloseCodes.Unauthorized : WsCloseCodes.Normal);
         }
@@ -899,137 +633,4 @@ export class Connection {
         this.promises.clear();
         this.inter.onDestroy();
     }
-}
-
-/**
- * Callbacks and limits supplied by whoever owns a {@link Connection}. `Client.connect()` builds one internally (only `hp` is
- * configurable there, through `ClientOptions.hp`); servers build their own.
- *
- * All durations are counted in ticks of the connection's 1-second timer. Use positive integers: the countdowns end when they
- * reach exactly 0.
- *
- * @example
- * ```ts
- * import { Connection, ConnectionInterface } from '@araminix/lib';
- *
- * const inter: ConnectionInterface = {
- *     hp: 120,
- *     streamRequestHp: 15,
- *     maxPendingStreams: 64,
- *     onOpen: () => console.log('socket open'),
- *     onAccept: () => console.log('endpoint accepted'),
- *     onDisconnect: (code) => console.log('socket closed with', code),
- *     onDestroy: () => console.log('connection destroyed'),
- * };
- * const connection = new Connection(inter, '');
- * ```
- */
-export interface ConnectionInterface {
-    /**
-     * Ticks (seconds) the connection may spend without an attached socket before it is destroyed with {@link CloseCodes.Died}.
-     * Only counts down while no socket is attached, and is refilled when a socket opens (or is attached with `reset`).
-     *
-     * @defaultValue 300 (5 minutes)
-     */
-    hp?: number;
-    /**
-     * Ticks an incoming `new_stream` request waits for {@link Connection.acquireStream} before it is dropped and the peer gets
-     * `close_stream` with `Lost`.
-     *
-     * @defaultValue 10
-     */
-    streamRequestHp?: number;
-    /**
-     * Maximum number of queued (not yet acquired) incoming stream requests, across all names. Further `new_stream` requests are
-     * answered with `close_stream` `Error`.
-     *
-     * @defaultValue `undefined` (no limit)
-     */
-    maxPendingStreams?: number;
-    /**
-     * Maximum bytes allowed in `ws.bufferedAmount` (including the next frame's UTF-8 byte length) before outgoing writes are
-     * rejected with `err()` without calling `ws.send()`. Set to `0` to disable backpressure checks.
-     *
-     * @defaultValue 4194304 (4 MiB)
-     */
-    maxBufferedBytes?: number;
-    /**
-     * Ticks (seconds) a socket may remain continuously backpressured (without draining, sending successfully, or receiving a
-     * `pong_stream`) before the stalled socket is closed/terminated so dead slow consumers do not linger. Set to `0` to disable
-     * automatic termination on sustained backpressure.
-     *
-     * @defaultValue 10
-     */
-    backpressureHp?: number;
-    /** Called once, at the end of {@link Connection.destroy}. */
-    onDestroy: () => void;
-    /**
-     * Called when the attached socket closes, with its WebSocket close code (e.g. 1006, or one of {@link WsCloseCodes}). The
-     * connection stays alive; the owner decides whether to attach a new socket or destroy it.
-     */
-    onDisconnect: (code: number) => void;
-    /** Called when the first `accept_endpoint` frame arrives (client side). Later ones are ignored. */
-    onAccept: () => void;
-    /** Optional: called whenever the attached socket fires `open`. */
-    onOpen?: () => void;
-}
-
-/**
- * WebSocket close codes with a meaning in this protocol. 4000-4999 are application codes in RFC 6455.
- *
- * `Client.connect()` treats 4401, 4403, 4404, 4409 and 4000 as final (see `ConnectFail`) and reconnects with backoff after any
- * other code, including 1006 (abnormal closure) and 1011.
- *
- * @example
- * ```ts
- * // Server side: refuse an unauthenticated upgrade.
- * ws.close(WsCloseCodes.Unauthorized);
- * ```
- */
-export enum WsCloseCodes {
-    /** 1011, the RFC 6455 "internal error" code: the server failed while handling the connection. Clients reconnect with backoff. */
-    InternalError = 1011,
-    /** 4404: the endpoint does not exist. Client result: `ConnectFail.NotFound`. */
-    NotFound = 4404,
-    /**
-     * 4409: another connection for the same client, endpoint and arg replaced this one. Also sent by {@link Connection.connect} to
-     * the socket it replaces. Client result: `ConnectFail.Concurrent`.
-     */
-    ConcurrentConnection = 4409,
-    /** 4401: not authenticated (missing or invalid session cookie or token). Client result: `ConnectFail.Unauthorized`. */
-    Unauthorized = 4401,
-    /** 4403: the server refused the endpoint ({@link Connection.deny}) or the request origin. Client result: `ConnectFail.Denied`. */
-    Denied = 4403,
-    /** 4000: deliberate close, sent when a connection is destroyed. The client stops (`ConnectFail.Unexpected` if still connecting). */
-    Normal = 4000,
-}
-
-/**
- * Why a {@link Connection} was destroyed: the value of {@link Connection.closePromise} and `Socket.waitClose()`.
- *
- * The descriptions say which situations produce each code on the client (`Client.connect()`); servers choose their own codes
- * when they call {@link Connection.destroy}.
- *
- * @example
- * ```ts
- * const reason = await socket.waitClose();
- * if (reason === CloseCodes.Unauthorized) {
- *     console.warn('the server no longer accepts this session; log in again');
- * }
- * ```
- */
-export enum CloseCodes {
-    /** No socket was attached for {@link ConnectionInterface.hp} ticks. */
-    Died = 'Died',
-    /**
-     * Something went wrong: the connect timeout expired, the reconnect limit was reached, the server answered 4404, no
-     * WebSocket implementation exists, or `accept()` could not be sent.
-     */
-    Unexpected = 'Unexpected',
-    /** Closed on purpose: `Socket.destroy()` / `AgentClient.destroy()`, or the server closed with 4000. */
-    Intentional = 'Intentional',
-    /** The server reported that another connection took over (4409). */
-    Concurrent = 'Concurrent',
-    /** Authentication or authorization failed: close code 4401 or 4403, or {@link Connection.deny}. */
-    Unauthorized = 'Unauthorized',
 }

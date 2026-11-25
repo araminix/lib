@@ -2,8 +2,8 @@ import axios from 'axios';
 import assert from 'node:assert';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 
-import { Client, ConnectFail } from '../src/client.js';
-import { WsCloseCodes } from '../src/connection.js';
+import { Client, ConnectFail } from '../src/client/index.js';
+import { WsCloseCodes } from '../src/connection/index.js';
 
 describe('Client Session Security and Headers', () => {
     let capturedUrl: string | undefined;

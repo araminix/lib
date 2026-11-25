@@ -2,8 +2,8 @@ import assert from 'node:assert';
 import { getEventListeners } from 'node:events';
 import { describe, it } from 'node:test';
 
-import { CloseCodes, Connection } from '../src/connection.js';
-import { ConnectionStatus, Socket, SocketErr } from '../src/Socket.js';
+import { CloseCodes, Connection } from '../src/connection/index.js';
+import { ConnectionStatus, Socket, SocketErr } from '../src/socket/index.js';
 
 describe('Socket and Connection Lifecycle', () => {
     it('initializes socket and checks connection status accurately', () => {

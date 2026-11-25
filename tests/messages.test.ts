@@ -1,7 +1,7 @@
 import assert from 'node:assert';
 import { describe, it } from 'node:test';
 
-import { AcceptEndpoint, AcceptStream, CloseStream, DataStream, NewStream, PingStream, PongStream } from '../src/messages.js';
+import { AcceptEndpoint, AcceptStream, CloseStream, DataStream, NewStream, PingStream, PongStream } from '../src/protocol/messages.js';
 
 describe('Messages Protocol Validation', () => {
     it('validates NewStream message', () => {

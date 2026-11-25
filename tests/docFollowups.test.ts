@@ -4,10 +4,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { describe, it } from 'node:test';
 
-import { Client } from '../src/client.js';
-import { CloseCodes, Connection, WsCloseCodes } from '../src/connection.js';
-import { OutgoingStreamController, StreamCloseCodes, StreamErr } from '../src/stream.js';
-import { LOG_LEVEL, Logger } from '../src/utils/logger.js';
+import { Client } from '../src/client/index.js';
+import { CloseCodes, Connection, WsCloseCodes } from '../src/connection/index.js';
+import { OutgoingStreamController, StreamCloseCodes, StreamErr } from '../src/stream/index.js';
+import { LOG_LEVEL, Logger } from '../src/utils/logger/index.js';
 
 function makeWs() {
     const sent: any[] = [];
@@ -30,7 +30,7 @@ function makeConnection(): Connection {
     return new Connection({ onDestroy: () => {}, onDisconnect: () => {}, onAccept: () => {} }, 'test');
 }
 
-describe('Stream writes that cannot be serialised', () => {
+describe('Stream writes that cannot be serialized', () => {
     it('reject with StreamErr.Invalid instead of blocking the queue', async () => {
         const conn = makeConnection();
         const controller = new OutgoingStreamController(conn, 'svc', null);

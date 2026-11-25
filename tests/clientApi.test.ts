@@ -2,7 +2,7 @@ import axios from 'axios';
 import assert from 'node:assert';
 import { describe, it } from 'node:test';
 
-import { Client } from '../src/client.js';
+import { Client } from '../src/client/index.js';
 
 describe('Client attachment and file APIs', () => {
     const client = new Client({ host: 'http://127.0.0.1:3000', wsHost: 'ws://127.0.0.1:3000', mount: '/api' });
